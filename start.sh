@@ -276,25 +276,27 @@ admin_account_exists() {
     local domain_hex got stderr
     domain_hex=$(printf '%s' "$DOMAIN" | od -An -tx1 | tr -d ' \n')
     stderr=$(mktemp)
-    # Leave stderr VISIBLE via a tempfile we inspect, rather than the
-    # older ``2>/dev/null`` pattern that made "DB corrupt" indistinguishable
-    # from "no row found" and triggered a confusing re-provisioning attempt.
+    # Capture sqlite3 stderr to a tempfile instead of discarding it.
+    # Any diagnostic — "database is locked", "no such table",
+    # "permission denied" on the db file — gets surfaced to the
+    # container log so the operator isn't debugging blind when
+    # re-provisioning attempts unexpectedly fire.
     got=$(sqlite3 "$db" \
         "SELECT COUNT(*) FROM prosody WHERE host=CAST(x'${domain_hex}' AS TEXT) AND user='admin' AND store='accounts';" \
         2>"$stderr" || echo ERR)
-    if [[ "$got" == "ERR" || ! -s "$stderr" ]]; then
-        # Either sqlite3 exited non-zero (errors appear in $stderr),
-        # or it succeeded but wrote nothing to stderr (typical case).
-        # If there's any stderr content we log it — this is the
-        # diagnostic the old ``2>/dev/null`` threw away.
-        if [[ -s "$stderr" ]]; then
-            log "warning: sqlite3 query failed:"
-            sed 's/^/  /' "$stderr" | while IFS= read -r line; do log "$line"; done
-        fi
+    # Log anything sqlite3 wrote to stderr, regardless of whether it
+    # exited zero.  The two cases we care about:
+    #   * non-zero exit + stderr text    → hard query failure
+    #   * zero exit + stderr text        → warning (deprecation, etc)
+    # Both benefit from being visible.
+    if [[ -s "$stderr" ]]; then
+        log "sqlite3 diagnostic output:"
+        while IFS= read -r line; do log "  $line"; done < "$stderr"
     fi
     rm -f "$stderr"
-    # ``$got`` may be empty if sqlite3 crashed entirely; treat that as
-    # "no account" so we attempt (and then clearly fail) provisioning.
+    # ``$got`` is "ERR" on non-zero sqlite3 exit, empty if sqlite3
+    # crashed outright, or a decimal count.  Treat any non-positive
+    # integer value as "no account".
     [[ -n "$got" && "$got" != "ERR" && "$got" -gt 0 ]] 2>/dev/null
 }
 
@@ -311,10 +313,9 @@ if ! admin_account_exists; then
     fi
 else
     log "admin account already provisioned; skipping"
-    # Make sure an existing password file is operator-readable (see
-    # create_admin_account's chmod comment for why 644).  This is
-    # here so an image upgrade that introduced this convention can
-    # fix up files created by an earlier version that used chmod 600.
+    # Keep the existing password file mode in sync with what
+    # create_admin_account sets on first boot (644, so the zone
+    # owner can read it via file-browser under rootless podman).
     if [[ -f "$ADMIN_PASSWORD_FILE" ]]; then
         chmod 644 "$ADMIN_PASSWORD_FILE"
     fi

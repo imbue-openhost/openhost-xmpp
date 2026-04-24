@@ -16,19 +16,19 @@
 --   better, and halves on-disk IOPS.
 -- * Registration is off by default.  The zone owner creates accounts via
 --   ``prosodyctl adduser``; documented in the README.
--- * The admin user is ``admin@<zone>``, minted on first boot by start.sh
+-- * The admin user is ``admin@<xmpp-domain>``, minted on first boot by start.sh
 --   with a random password in $OPENHOST_APP_DATA_DIR/admin_password.txt.
--- * TLS is handled by a single cert/key pair at ``$DATA/certs/<zone>.{crt,key}``.
+-- * TLS is handled by a single cert/key pair at ``$DATA/certs/<xmpp-domain>.{crt,key}``.
 --   A self-signed pair is generated on first boot; the operator can drop
 --   real Let's Encrypt certs there and ``prosodyctl reload`` to swap in.
 -- * Federation (s2s) is enabled out of the box but will fail to other
 --   servers until real certs are in place — self-signed is rejected by
 --   most federating peers.
--- * HTTP file sharing (XEP-0363) lives on a sub-component (share.<zone>)
+-- * HTTP file sharing (XEP-0363) lives on a sub-component (share.<xmpp-domain>)
 --   and is backed by prosody's built-in ``http_file_share`` module with a
 --   100 MiB per-file cap, a 500 MiB per-user-per-day rolling quota, and
 --   a 30-day expiry.  Files live in $OPENHOST_APP_DATA_DIR/http_file_share.
--- * Multi-user chat (XEP-0045) runs on conference.<zone>.  Rooms are
+-- * Multi-user chat (XEP-0045) runs on conference.<xmpp-domain>.  Rooms are
 --   persistent by default so a restart doesn't wipe group history.
 
 admins = { "@@ADMIN_JID@@" }
@@ -44,7 +44,7 @@ storage = "sql"
 sql = { driver = "SQLite3"; database = "@@DATA_DIR@@/prosody.sqlite"; }
 
 -- In-band registration is disabled.  The zone owner mints accounts via
--- ``prosodyctl adduser user@<zone>`` from the file-browser-accessible
+-- ``prosodyctl adduser user@<xmpp-domain>`` from the file-browser-accessible
 -- terminal or ``oh app exec``.  The README documents this.
 allow_registration = false
 
@@ -125,7 +125,7 @@ https_interfaces = { "0.0.0.0" }
 
 -- Tell the HTTP stack our external URL shape so BOSH / websocket /
 -- file-share URLs advertised to clients resolve outside the container.
--- ``https://<zone>:5281`` is where browsers and mobile clients will
+-- ``https://<xmpp-domain>:5281`` is where browsers and mobile clients will
 -- actually reach us.
 http_external_url = "https://@@DOMAIN@@:5281/"
 https_certificate = "@@DATA_DIR@@/certs/@@DOMAIN@@.crt"
@@ -166,7 +166,7 @@ VirtualHost "@@DOMAIN@@"
     }
 
 -- ---------------------------------------------------------------------------
--- MUC: multi-user chat on conference.<zone>.  Rooms persist across
+-- MUC: multi-user chat on conference.<xmpp-domain>.  Rooms persist across
 -- restarts (mod_muc's default is in-memory; the SQL storage above
 -- fixes that) and room history is archived via mod_muc_mam.
 -- ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ Component "conference.@@DOMAIN@@" "muc"
     max_history_messages = 1000
 
 -- ---------------------------------------------------------------------------
--- HTTP file share on share.<zone>.  Clients that support XEP-0363 (most
+-- HTTP file share on share.<xmpp-domain>.  Clients that support XEP-0363 (most
 -- modern ones) will discover this automatically via disco#items on the
 -- root domain.  Max file size and per-user quota are below.
 -- ---------------------------------------------------------------------------

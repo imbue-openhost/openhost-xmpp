@@ -30,11 +30,13 @@ label = "c2s-tls"
 container_port = 5223
 host_port = 5223
 
-# Server-to-server federation (STARTTLS).  Without a real cert
-# matching $OPENHOST_ZONE_DOMAIN, federation to other servers will
-# fail with cert validation errors — this port is still open so
-# federation works once the operator drops real certs into the data
-# directory.
+# Server-to-server federation (STARTTLS).  The XMPP domain this
+# server serves is ``<app-name>.<zone-domain>`` by default
+# (``xmpp.<zone-domain>`` for a stock deploy), so federating peers
+# expect a cert that covers that FQDN.  Without a real cert matching
+# it, federation to other servers will fail with cert-validation
+# errors — this port is still open so federation starts working as
+# soon as the operator drops real certs into the data directory.
 [[ports]]
 label = "s2s"
 container_port = 5269
