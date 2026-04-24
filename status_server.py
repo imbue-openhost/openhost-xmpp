@@ -7,16 +7,17 @@ itself is plain TCP on 5222 (STARTTLS), 5223 (direct-TLS), 5269/5270
 (server-to-server) — none of which the router touches; those are
 published directly via ``[[ports]]`` in ``openhost.toml``.
 
-This module exposes two endpoints:
+This module exposes these endpoints:
 
 ``GET /healthz``
-    Returns ``200 ok`` iff something is listening on localhost:5222
-    (the c2s STARTTLS port — the canonical "prosody is running"
-    signal).  Returns ``503`` otherwise so the OpenHost dashboard
-    correctly shows the app as crashed when Prosody fails to start.
+    Returns HTTP 200 with body ``ok`` iff something is listening on
+    localhost:5222 (the c2s STARTTLS port — the canonical "prosody is
+    running" signal).  Returns 503 otherwise so the OpenHost
+    dashboard correctly shows the app as crashed when Prosody fails
+    to start.
 
-``GET /``
-    Serves a small HTML landing page listing the XMPP connect URIs
+``GET /`` and ``GET /index.html``
+    Serve a small HTML landing page listing the XMPP connect URIs
     (hostname derived from the ``Host`` / ``X-Forwarded-Host`` header),
     client recommendations, and administration pointers.  No secrets
     are rendered here — the admin password lives in

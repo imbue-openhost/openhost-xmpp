@@ -4,7 +4,7 @@ Prosody XMPP server packaged as an OpenHost app.
 
 - **XMPP 1.0** with modern client-side extensions out of the box: MAM (message archive, synced across devices), carbons, stream management, CSI (mobile battery saver), PEP, bookmarks, vCard.
 - **Multi-user chat** on `conference.<xmpp-domain>` (XEP-0045 + MUC-MAM).
-- **HTTP file sharing** on `share.<xmpp-domain>` (XEP-0363) with a 100 MiB per-file cap and 500 MiB per-user-per-day rolling quota.
+- **HTTP file sharing** on `share.<xmpp-domain>` (XEP-0363) with a 100 MiB per-file cap, 500 MiB per-user-per-day rolling quota, and a 30-day expiry on each uploaded file.
 - **Mobile push notifications** (XEP-0357) so Conversations / Monal get notified even when the app isn't running.
 - **Self-signed TLS** on first boot — works with modern clients that use XEP-0368 direct-TLS on port 5223. Federation to other servers will fail until you drop in a real certificate (see below).
 - **Registration closed by default**. You provision accounts by hand.
@@ -121,7 +121,8 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 - `prosody.sqlite` — accounts, rosters, MAM archive, PEP pubsub, blocklists.
 - `certs/<xmpp-domain>.crt`, `certs/<xmpp-domain>.key` — TLS material (self-signed or operator-supplied).
 - `admin_password.txt` — one-time admin password from first boot.
-- `http_file_share/` — uploaded files from XEP-0363 transfers.
+- `http_file_share/` — uploaded files from XEP-0363 transfers. Files are auto-expired 30 days after upload.
+- `plugins/` — drop-in directory for custom Prosody modules. `plugin_paths` in the rendered config includes this directory, so you can extend the server without rebuilding the image. Empty by default.
 
 All of these are included in OpenHost backups.
 

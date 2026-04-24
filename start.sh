@@ -142,20 +142,24 @@ log "rendered $CONFIG_FILE"
 # real certificates (Let's Encrypt etc.) and ``prosodyctl reload``
 # — the filenames stay the same so the config keeps working.
 generate_self_signed_cert() {
-    # Cleanup strategy: bash's ``trap ... RETURN`` is the natural fit
-    # but persists globally and would reference now-stale local
-    # variables on later function returns.  Instead, do explicit
-    # cleanup on both exit paths below: the happy path unconditionally
-    # removes the config tempfile before returning, and the sad
-    # path does the same via a ``|| { cleanup; return 1; }`` rescue
-    # idiom.  We deliberately avoid ERR trap here because it persists
-    # globally like RETURN does, and having it fire on a later, unrelated
-    # ERR in this script would reference stale ``$KEY_FILE.partial``
-    # paths.
+    # Cleanup strategy: bash's ``trap ... RETURN`` and ``trap ...
+    # ERR`` both persist globally past the function's return and
+    # would reference now-stale local variables on later function
+    # calls.  Instead we do explicit cleanup at each exit path via
+    # ``if !`` guards below.
     local cnf
-    cnf=$(mktemp)
-    _cleanup_partials() {
-        rm -f "$cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" 2>/dev/null || true
+    if ! cnf=$(mktemp 2>/dev/null) || [[ -z "$cnf" ]]; then
+        log "ERROR: mktemp failed"
+        return 1
+    fi
+    # Inline cleanup — avoid a nested function which (a) would
+    # pollute bash's global function namespace with a generic name
+    # after this function returns, and (b) would capture ``$cnf``
+    # by name, finding an unset value after the enclosing function
+    # returned on a later call.
+    _sscert_cleanup() {
+        rm -f "$cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" \
+              "$KEY_FILE.orphan" "$CERT_FILE.orphan" 2>/dev/null || true
     }
 
     cat > "$cnf" <<EOF
@@ -186,19 +190,27 @@ EOF
             -days 825 -config "$cnf" -extensions v3_req \
             >/dev/null; then
         log "ERROR: openssl cert generation failed"
-        _cleanup_partials
+        _sscert_cleanup
         return 1
     fi
     # Atomic rename.  If either ``mv`` fails (permission on
-    # $DATA_DIR, say) we end up with a .partial file on disk; clean
-    # it up so the next boot's ``-s`` check of the real cert path
-    # can't get confused.
-    if ! { mv "$KEY_FILE.partial" "$KEY_FILE" && mv "$CERT_FILE.partial" "$CERT_FILE"; }; then
-        log "ERROR: unable to move cert/key into place"
-        _cleanup_partials
+    # $DATA_DIR, say), clean up so the next boot's guard isn't
+    # confused by half-a-pair.  If the key rename succeeds but the
+    # cert rename fails, we'd end up with a real-path key with no
+    # matching cert; rename-back the key to ``.orphan`` so the
+    # cleanup can remove it too.
+    if ! mv "$KEY_FILE.partial" "$KEY_FILE"; then
+        log "ERROR: unable to move key into place"
+        _sscert_cleanup
         return 1
     fi
-    _cleanup_partials
+    if ! mv "$CERT_FILE.partial" "$CERT_FILE"; then
+        log "ERROR: unable to move cert into place (rolling back key)"
+        mv "$KEY_FILE" "$KEY_FILE.orphan" 2>/dev/null || true
+        _sscert_cleanup
+        return 1
+    fi
+    _sscert_cleanup
     chmod 640 "$CERT_FILE" "$KEY_FILE"
     # Ownership: we'd prefer root:prosody so the prosody user can
     # read but not overwrite its own private key.  In practice the
@@ -252,12 +264,15 @@ create_admin_account() {
     # over the threshold for offline-brute-force resistance on a
     # bcrypt-stretched hash in practical scenarios.
     #
-    # We call this from inside ``if ! create_admin_account`` which
-    # suppresses ``set -e`` for the whole function body (bash
-    # quirk).  Belt-and-braces: explicitly check that the
-    # password-generation command actually produced output before
-    # we go on to register an account with an empty string.
-    password=$(openssl rand -hex 12) || true
+    # ``openssl rand -hex 12`` emits 24 lowercase hex chars on
+    # success.  We explicitly check the length because the caller
+    # invokes this function under ``if !`` which suppresses
+    # ``set -e`` throughout — a silent failure of openssl would
+    # otherwise let us register an account with an empty password.
+    if ! password=$(openssl rand -hex 12); then
+        log "ERROR: openssl rand -hex 12 failed"
+        return 1
+    fi
     if [[ ${#password} -ne 24 ]]; then
         log "ERROR: openssl rand -hex 12 produced unexpected output (len=${#password})"
         return 1
