@@ -35,13 +35,15 @@ oh app deploy https://github.com/imbue-openhost/openhost-xmpp --wait
 
 ### 2. Grab the admin password
 
-First boot generates an `admin@<zone>` account. The password lands in `$OPENHOST_APP_DATA_DIR/admin_password.txt`:
+First boot generates an `admin@<xmpp-domain>` account, where `<xmpp-domain>` is by default `<app-name>.<zone>` — e.g. `admin@xmpp.andrew.host.imbue.com` if you deployed as `app-name = "xmpp"` under zone `andrew.host.imbue.com`. The password lands in `$OPENHOST_APP_DATA_DIR/admin_password.txt`.
 
-```bash
-oh app logs xmpp | grep admin_password
-# Or via the file-browser app:
-#   https://file-browser.<zone>/app_data/xmpp/admin_password.txt
+Fetch it via the file-browser app:
+
 ```
+https://file-browser.<zone>/app_data/xmpp/admin_password.txt
+```
+
+The container logs record only the file path, not the password itself, so `oh app logs` won't reveal the credential.
 
 ### 3. Create user accounts
 
@@ -52,7 +54,7 @@ oh app exec xmpp prosodyctl adduser alice@xmpp.<zone>
 oh app exec xmpp prosodyctl adduser bob@xmpp.<zone>
 ```
 
-`prosodyctl` prompts for a password.
+`prosodyctl` prompts for a password interactively.
 
 ### 4. Point a client at the server
 

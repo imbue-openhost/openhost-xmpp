@@ -1,9 +1,11 @@
 -- Prosody configuration template for the OpenHost XMPP app.
 --
 -- ``start.sh`` renders this file into $OPENHOST_APP_DATA_DIR/prosody.cfg.lua
--- on first boot by replacing the ``@@DOMAIN@@``, ``@@DATA_DIR@@``, and
--- ``@@ADMIN_JID@@`` placeholders.  The rendered file is what Prosody
--- actually loads — the template itself is never touched at runtime.
+-- on EVERY boot (not just the first) by replacing the ``@@DOMAIN@@``,
+-- ``@@DATA_DIR@@``, and ``@@ADMIN_JID@@`` placeholders.  Re-rendering
+-- each boot means a new image version's config changes take effect
+-- automatically without the operator having to clear the data dir.
+-- The template itself is never touched at runtime.
 --
 -- Design notes
 -- ============
@@ -140,8 +142,11 @@ log = {
 daemonize = false
 pidfile = nil
 
--- Authentication backend.  internal_hashed uses bcrypt-derived hashes
--- stored in the SQL backend; good default.
+-- Authentication backend.  ``internal_hashed`` stores SCRAM-SHA-1 /
+-- SCRAM-SHA-256 keys (PBKDF2-derived per RFC 5802) in the configured
+-- storage backend, which is our SQLite DB above.  The keys are
+-- SCRAM-stretched rather than raw-password-hashed so SASL challenge
+-- rounds can be answered without the plaintext password.
 authentication = "internal_hashed"
 
 -- ---------------------------------------------------------------------------

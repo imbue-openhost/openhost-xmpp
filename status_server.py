@@ -110,10 +110,11 @@ _HTML_TEMPLATE = """<!doctype html>
     </ul>
     <p>Self-signed certificate on first boot — accept it once in your
        client, or drop a real cert/key pair named
-       <code>&lt;zone&gt;.crt</code> + <code>&lt;zone&gt;.key</code>
-       (matching this server's XMPP domain) into
-       <code>$OPENHOST_APP_DATA_DIR/certs/</code> to replace it, then
-       <code>prosodyctl reload</code>.</p>
+       <code>&lt;xmpp-domain&gt;.crt</code> +
+       <code>&lt;xmpp-domain&gt;.key</code> into
+       <code>$OPENHOST_APP_DATA_DIR/certs/</code> on your OpenHost
+       host to replace it, then reload Prosody from the host:
+       <code>oh app exec xmpp prosodyctl reload</code>.</p>
     <p>Recommended clients:
        <a href="https://conversations.im/">Conversations</a> (Android),
        <a href="https://dino.im/">Dino</a> (Linux),
@@ -211,8 +212,17 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-def main() -> None:
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+def main() -> int:
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    except OSError as exc:
+        # Typically "[Errno 98] Address already in use" if a zombie
+        # previous instance hasn't released the port yet.  Surface a
+        # clear error message instead of an unhandled traceback;
+        # start.sh's ``wait -n`` will see us exit and take the
+        # container down so OpenHost restarts it with a fresh bind.
+        sys.stderr.write(f"[status] FATAL: cannot bind :{PORT}: {exc}\n")
+        return 1
     sys.stderr.write(f"[status] listening on :{PORT}\n")
     try:
         server.serve_forever()
@@ -220,7 +230,8 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

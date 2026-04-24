@@ -6,17 +6,23 @@
 # (prosody or the status sidecar) exiting so we can tear down the
 # other and have OpenHost restart the container.
 #
-# On first boot we:
-#   1. Work out the public zone domain ($OPENHOST_ZONE_DOMAIN +
-#      $OPENHOST_APP_NAME → <app>.<zone>).
+# On every boot we:
+#   1. Work out the XMPP domain ($XMPP_DOMAIN if set, else
+#      ``<OPENHOST_APP_NAME>.<OPENHOST_ZONE_DOMAIN>``).
 #   2. Render ``prosody.cfg.lua`` from the bundled template with that
-#      domain baked in.
-#   3. Generate a self-signed TLS cert/key pair for the zone.
-#   4. Create an ``admin@<zone>`` account with a random password and
-#      write the password to ``$OPENHOST_APP_DATA_DIR/admin_password.txt``
-#      (chmod 600).
-# On later boots we skip any step whose artifact already exists so the
-# admin password, certs, and config survive restarts.
+#      domain baked in.  (Re-rendering every boot means template
+#      updates in new image versions take effect automatically.)
+# On first boot only we also:
+#   3. Generate a self-signed TLS cert/key pair (``<domain>.crt`` and
+#      ``<domain>.key``) under ``$OPENHOST_APP_DATA_DIR/certs/``.
+#   4. Create an ``admin@<domain>`` Prosody account with a random
+#      password and write the password to
+#      ``$OPENHOST_APP_DATA_DIR/admin_password.txt`` (chmod 644 so
+#      the zone owner can read it via the file-browser app — see the
+#      comment on ``create_admin_account`` for the rootless-podman
+#      reasoning).
+# The cert, key, SQLite account DB, and password file all persist
+# across restarts.
 #
 # Then we:
 #   * Start the HTTP status sidecar on :8080 (satisfies the OpenHost
@@ -120,11 +126,17 @@ log "rendered $CONFIG_FILE"
 generate_self_signed_cert() {
     local cnf
     cnf=$(mktemp)
-    # Clean up the config file on every exit path — crucial because
-    # ``set -euo pipefail`` at the script level means a failing
-    # ``openssl req`` below will abort the function before the
-    # post-openssl ``rm -f "$cnf"`` line can run otherwise.
-    trap 'rm -f "$cnf"' RETURN
+    # Cleanup strategy: we can't use ``trap ... RETURN`` because
+    # bash's RETURN trap is NOT scoped to this function — it
+    # persists and fires on every subsequent function return in the
+    # shell, and ``$cnf`` will be unset then (``set -u`` would
+    # abort).  Instead, do a best-effort cleanup on both happy
+    # (post-openssl) and sad (openssl failure via an explicit
+    # trap-then-unset on ERR) paths.
+    local _cleanup_cnf="$cnf"
+    _cleanup() { rm -f "$_cleanup_cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" 2>/dev/null || true; }
+    trap _cleanup ERR
+
     cat > "$cnf" <<EOF
 [req]
 default_bits = 2048
@@ -143,14 +155,21 @@ DNS.1 = ${DOMAIN}
 DNS.2 = conference.${DOMAIN}
 DNS.3 = share.${DOMAIN}
 EOF
+    # Write to ``.partial`` first so a crash mid-write doesn't leave a
+    # half-written file that the boot-time guard mistakes for a
+    # usable cert.  On success we atomically rename into place.
     # Leave openssl's stderr visible so a failure (bad config,
     # entropy starvation, permission error) shows up in the
     # container log rather than the script dying silently with no
     # diagnostic.  stdout is routine progress so we drop it.
     openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$KEY_FILE" -out "$CERT_FILE" \
+        -keyout "$KEY_FILE.partial" -out "$CERT_FILE.partial" \
         -days 825 -config "$cnf" -extensions v3_req \
         >/dev/null
+    mv "$KEY_FILE.partial" "$KEY_FILE"
+    mv "$CERT_FILE.partial" "$CERT_FILE"
+    rm -f "$cnf"
+    trap - ERR
     chmod 640 "$CERT_FILE" "$KEY_FILE"
     # Ownership: we'd prefer root:prosody so the prosody user can
     # read but not overwrite its own private key.  In practice the
@@ -183,30 +202,46 @@ chown -R prosody:prosody "$DATA_DIR"
 # configured path — which prosodyctl creates on first use.
 create_admin_account() {
     local password
-    # 24 chars of url-safe random (18 bytes → 24 base64 chars) plenty
-    # strong and easy to copy-paste.
-    password=$(openssl rand -base64 18 | tr -d '=+/' | cut -c1-24)
-    # prosodyctl register <user> <host> <password>
-    # Piped from stdin isn't supported; we pass it on the command line.
-    # The DB file doesn't exist yet, so prosodyctl will create it with
-    # the right schema on first touch.
-    if prosodyctl --config "$CONFIG_FILE" register admin "$DOMAIN" "$password"; then
-        printf '%s\n' "$password" > "$ADMIN_PASSWORD_FILE"
-        # World-readable by design: the app's data directory is already
-        # scoped to this app's container under OpenHost's data model,
-        # and the zone owner (only entity with file-browser access)
-        # needs to be able to read this file.  Under rootless podman
-        # the xmpp container's ``prosody`` user maps to a different
-        # subuid than file-browser's ``root``, so chmod 600 would
-        # make the password inaccessible to the operator — we trade
-        # filesystem-permission defence in depth for usability here.
-        chmod 644 "$ADMIN_PASSWORD_FILE"
-        chown prosody:prosody "$ADMIN_PASSWORD_FILE" 2>/dev/null || true
-        log "created admin account; password saved to $ADMIN_PASSWORD_FILE"
-        return 0
+    # 24 hex chars of randomness = 96 bits.  We use hex rather than
+    # base64 so the length is deterministic — stripping ``+/`` out
+    # of base64 would silently shrink the password.  96 bits is well
+    # over the threshold for offline-brute-force resistance on a
+    # bcrypt-stretched hash in practical scenarios.
+    password=$(openssl rand -hex 12)
+    # Stage the password file BEFORE calling prosodyctl.  If
+    # prosodyctl succeeds but the file write subsequently fails
+    # (disk full / weird filesystem), we'd end up with an admin
+    # account whose password we can never tell the operator —
+    # recovering would mean manually deleting the SQLite row.
+    # Writing first, then registering, avoids that.
+    if ! printf '%s\n' "$password" > "$ADMIN_PASSWORD_FILE"; then
+        log "ERROR: failed to write $ADMIN_PASSWORD_FILE"
+        return 1
     fi
-    log "ERROR: failed to create admin account"
-    return 1
+    # prosodyctl register <user> <host> <password>
+    # Piped from stdin isn't supported; we pass it on the command
+    # line.  ``ps aux`` exposure is accepted — this container runs
+    # under OpenHost's single-tenant model with no adversarial
+    # co-resident processes.  The DB file doesn't exist yet, so
+    # prosodyctl will create it with the right schema on first
+    # touch.
+    if ! prosodyctl --config "$CONFIG_FILE" register admin "$DOMAIN" "$password"; then
+        log "ERROR: prosodyctl register failed; rolling back password file"
+        rm -f "$ADMIN_PASSWORD_FILE" 2>/dev/null || true
+        return 1
+    fi
+    # World-readable by design: the app's data directory is already
+    # scoped to this app's container under OpenHost's data model,
+    # and the zone owner (only entity with file-browser access)
+    # needs to be able to read this file.  Under rootless podman
+    # the xmpp container's ``prosody`` user maps to a different
+    # subuid than file-browser's ``root``, so chmod 600 would
+    # make the password inaccessible to the operator — we trade
+    # filesystem-permission defence in depth for usability here.
+    chmod 644 "$ADMIN_PASSWORD_FILE"
+    chown prosody:prosody "$ADMIN_PASSWORD_FILE" 2>/dev/null || true
+    log "created admin account; password saved to $ADMIN_PASSWORD_FILE"
+    return 0
 }
 
 admin_account_exists() {
@@ -247,13 +282,13 @@ if ! admin_account_exists; then
     fi
 else
     log "admin account already provisioned; skipping"
-fi
-
-# Every boot: ensure the admin password file (if present) is readable by
-# the operator's file-browser container.  See the comment on
-# create_admin_account's chmod for why 644 rather than 600.
-if [[ -f "$ADMIN_PASSWORD_FILE" ]]; then
-    chmod 644 "$ADMIN_PASSWORD_FILE"
+    # Make sure an existing password file is operator-readable (see
+    # create_admin_account's chmod comment for why 644).  This is
+    # here so an image upgrade that introduced this convention can
+    # fix up files created by an earlier version that used chmod 600.
+    if [[ -f "$ADMIN_PASSWORD_FILE" ]]; then
+        chmod 644 "$ADMIN_PASSWORD_FILE"
+    fi
 fi
 
 # --- supervise prosody + the status sidecar --------------------------
@@ -264,6 +299,18 @@ fi
 # container.  ``set -e`` has to be off around ``wait -n`` so a
 # non-zero exit doesn't abort the supervisor before we reach the
 # cleanup — see openhost-miniflux/start.sh for the full rationale.
+# Register the SIGTERM/SIGINT handler BEFORE backgrounding anything
+# so a ``docker stop`` that arrives during the small window between
+# first ``&`` and the ``trap`` below doesn't use bash's default
+# handler (which just exits, leaving both children as orphans).  The
+# trap references ``STATUS_PID`` and ``PROSODY_PID``; at this point
+# neither is set yet, so we initialise them to empty strings and let
+# the later ``kill -TERM "$PID"`` with an empty arg silently be a
+# no-op if we somehow get a signal before the backgrounding.
+STATUS_PID=""
+PROSODY_PID=""
+trap 'kill -TERM ${PROSODY_PID:-} ${STATUS_PID:-} 2>/dev/null; wait' TERM INT
+
 log "starting HTTP status sidecar on :$STATUS_PORT"
 STATUS_PORT="$STATUS_PORT" python3 /usr/local/bin/status_server.py &
 STATUS_PID=$!
@@ -274,17 +321,10 @@ log "starting prosody"
 # path to the rendered config.
 #
 # Running as the ``prosody`` user — the package's default — via
-# ``setpriv`` (util-linux) or su.  The Debian prosody package adds a
-# ``/usr/lib/systemd/system/prosody.service`` that does this dance;
-# we replicate the key parts here.  ``runuser`` ships with coreutils.
+# ``runuser`` which ships with coreutils.
 runuser -u prosody -g prosody -- \
     prosody -F --config "$CONFIG_FILE" &
 PROSODY_PID=$!
-
-# Forward SIGTERM / SIGINT to both children so ``docker stop`` gets a
-# clean shutdown.  Prosody responds to SIGTERM by doing a clean
-# shutdown of the SQL store and TLS sessions; the sidecar just exits.
-trap 'kill -TERM "$PROSODY_PID" "$STATUS_PID" 2>/dev/null; wait' TERM INT
 
 set +e
 wait -n "$PROSODY_PID" "$STATUS_PID"
