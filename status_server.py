@@ -34,7 +34,27 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-PORT = int(os.environ.get("STATUS_PORT", "8080"))
+def _load_port() -> int:
+    """Read ``STATUS_PORT`` from env.  Empty string or unset → 8080.
+
+    Any non-integer value gets a clear error before the HTTP server
+    tries to bind.  We centralise this so the module-load path can't
+    crash with a bare ``ValueError`` traceback when someone drops a
+    typo into the manifest.
+    """
+    raw = os.environ.get("STATUS_PORT", "").strip() or "8080"
+    try:
+        port = int(raw)
+    except ValueError:
+        sys.stderr.write(f"[status] FATAL: STATUS_PORT={raw!r} is not an integer\n")
+        sys.exit(1)
+    if not 1 <= port <= 65535:
+        sys.stderr.write(f"[status] FATAL: STATUS_PORT={raw!r} out of range\n")
+        sys.exit(1)
+    return port
+
+
+PORT = _load_port()
 
 # Prosody's c2s port.  Checking that this specific port is open is a
 # more useful liveness signal than 5280 (HTTP) or 5269 (s2s) because
@@ -200,15 +220,23 @@ class Handler(BaseHTTPRequestHandler):
         self._respond(404, b"not found\n", "text/plain")
 
     def _respond(self, code: int, body: bytes, content_type: str) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
+        # A client can disconnect at any point — not just during
+        # ``wfile.write(body)``.  All of ``send_response``,
+        # ``send_header``, and ``end_headers`` also write to the
+        # socket and will raise ``BrokenPipeError`` /
+        # ``ConnectionResetError`` / ``TimeoutError`` (all subclasses
+        # of ``OSError``) when the client is gone.  Wrap the whole
+        # response write in a single ``OSError`` catch so the
+        # supervisor doesn't get a noisy traceback for every
+        # half-connected client.
         try:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
-            # Client hung up mid-response.  Harmless.
+        except OSError:
             pass
 
 

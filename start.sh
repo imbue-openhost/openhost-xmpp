@@ -96,11 +96,17 @@ render_config() {
     esc_data_dir=$(printf '%s' "$DATA_DIR" | sed -e 's/[|&\\]/\\&/g')
     esc_domain=$(printf '%s' "$DOMAIN" | sed -e 's/[|&\\]/\\&/g')
     esc_admin_jid=$(printf '%s' "$ADMIN_JID" | sed -e 's/[|&\\]/\\&/g')
+    # Atomic write: stage the rendered config to ``.partial`` then
+    # ``mv`` into place so a SIGKILL between shell-redirect truncation
+    # and sed completion can't leave the container rebooting into an
+    # empty or partial config.  (The cert-gen function uses the same
+    # pattern for the same reason.)
     sed \
         -e "s|@@DOMAIN@@|${esc_domain}|g" \
         -e "s|@@DATA_DIR@@|${esc_data_dir}|g" \
         -e "s|@@ADMIN_JID@@|${esc_admin_jid}|g" \
-        "$tmpl" > "$CONFIG_FILE"
+        "$tmpl" > "$CONFIG_FILE.partial"
+    mv "$CONFIG_FILE.partial" "$CONFIG_FILE"
     chmod 640 "$CONFIG_FILE"
     # Prosody must be able to read its config; running as the
     # ``prosody`` user (which the Debian package creates).  chgrp
@@ -191,7 +197,18 @@ fi
 # Prosody needs to own the data dir so it can write accounts, archive,
 # and file-share uploads.  The Debian package creates user+group both
 # named ``prosody``.
-chown -R prosody:prosody "$DATA_DIR"
+#
+# Under rootless podman the container's ``root`` is mapped to an
+# unprivileged host uid that is NOT a member of any of the host's
+# existing uid maps, so this chown can fail with "Operation not
+# permitted" even though the data dir is 0o777 on the host.  In that
+# case Prosody still works fine — the bind mount uses ``:idmap`` and
+# the container's ``prosody`` user ends up owning the files via the
+# usual container-internal UID.  Log a warning and move on rather
+# than aborting the whole boot.
+if ! chown -R prosody:prosody "$DATA_DIR" 2>/dev/null; then
+    log "warning: chown -R prosody:prosody $DATA_DIR failed (expected under rootless podman with no idmap); continuing"
+fi
 
 # --- admin account + password ---------------------------------------
 #
@@ -252,21 +269,33 @@ admin_account_exists() {
     if [[ ! -s "$db" ]]; then
         return 1
     fi
-    # We pass the domain via parameter binding — sqlite3 CLI
-    # supports ``-cmd '.param set :host "..."'`` so the untrusted
-    # ``$DOMAIN`` value never touches the SQL text.  Simpler
-    # alternative that works across sqlite3 versions: hex-encode the
-    # bytes and decode them back in SQL.  We use the hex trick
-    # because older sqlite3 CLIs don't support .param.
-    local domain_hex got
+    # Untrusted ``$DOMAIN`` is hex-encoded and rebuilt inside SQL via
+    # ``CAST(x'...' AS TEXT)`` so its value never touches the SQL
+    # text.  This is more portable than ``-cmd '.param set :host'``
+    # which only landed in modern sqlite3 CLIs.
+    local domain_hex got stderr
     domain_hex=$(printf '%s' "$DOMAIN" | od -An -tx1 | tr -d ' \n')
+    stderr=$(mktemp)
+    # Leave stderr VISIBLE via a tempfile we inspect, rather than the
+    # older ``2>/dev/null`` pattern that made "DB corrupt" indistinguishable
+    # from "no row found" and triggered a confusing re-provisioning attempt.
     got=$(sqlite3 "$db" \
         "SELECT COUNT(*) FROM prosody WHERE host=CAST(x'${domain_hex}' AS TEXT) AND user='admin' AND store='accounts';" \
-        2>/dev/null || echo 0)
-    # Use -gt 0 not == 1 so duplicate rows (from a hypothetical
-    # schema migration that left both copies) don't trick us into
-    # creating a second ``admin`` account with a different password.
-    [[ "$got" -gt 0 ]] 2>/dev/null
+        2>"$stderr" || echo ERR)
+    if [[ "$got" == "ERR" || ! -s "$stderr" ]]; then
+        # Either sqlite3 exited non-zero (errors appear in $stderr),
+        # or it succeeded but wrote nothing to stderr (typical case).
+        # If there's any stderr content we log it — this is the
+        # diagnostic the old ``2>/dev/null`` threw away.
+        if [[ -s "$stderr" ]]; then
+            log "warning: sqlite3 query failed:"
+            sed 's/^/  /' "$stderr" | while IFS= read -r line; do log "$line"; done
+        fi
+    fi
+    rm -f "$stderr"
+    # ``$got`` may be empty if sqlite3 crashed entirely; treat that as
+    # "no account" so we attempt (and then clearly fail) provisioning.
+    [[ -n "$got" && "$got" != "ERR" && "$got" -gt 0 ]] 2>/dev/null
 }
 
 if ! admin_account_exists; then
@@ -321,7 +350,8 @@ log "starting prosody"
 # path to the rendered config.
 #
 # Running as the ``prosody`` user — the package's default — via
-# ``runuser`` which ships with coreutils.
+# ``runuser`` (part of ``util-linux``, which is in every Debian base
+# image).
 runuser -u prosody -g prosody -- \
     prosody -F --config "$CONFIG_FILE" &
 PROSODY_PID=$!

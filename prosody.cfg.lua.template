@@ -156,7 +156,11 @@ authentication = "internal_hashed"
 
 VirtualHost "@@DOMAIN@@"
     enabled = true
-    -- Per-host contact info users can discover via disco.
+    -- Per-host contact info (XEP-0157) users can discover via disco.
+    -- The template renders ``admin@@@DOMAIN@@`` → ``admin@<domain>``
+    -- because ``@@`` is NOT our placeholder syntax — only ``@@NAME@@``
+    -- triggers substitution, so the leading single ``@`` is preserved
+    -- as a literal ``@``.
     contact_info = {
         admin = { "mailto:admin@@@DOMAIN@@", "xmpp:admin@@@DOMAIN@@" };
     }

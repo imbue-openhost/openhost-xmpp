@@ -3,11 +3,13 @@ Prosody XMPP server packaged as an OpenHost app.
 ## What you get
 
 - **XMPP 1.0** with modern client-side extensions out of the box: MAM (message archive, synced across devices), carbons, stream management, CSI (mobile battery saver), PEP, bookmarks, vCard.
-- **Multi-user chat** on `conference.<zone>` (XEP-0045 + MUC-MAM).
-- **HTTP file sharing** on `share.<zone>` (XEP-0363) with a 100 MB per-file cap and 500 MB per-user-per-day quota.
+- **Multi-user chat** on `conference.<xmpp-domain>` (XEP-0045 + MUC-MAM).
+- **HTTP file sharing** on `share.<xmpp-domain>` (XEP-0363) with a 100 MiB per-file cap and 500 MiB per-user-per-day rolling quota.
 - **Mobile push notifications** (XEP-0357) so Conversations / Monal get notified even when the app isn't running.
-- **Self-signed TLS** on first boot — works with modern clients that XEP-0368 direct-TLS on port 5223. Federation to other servers will fail until you drop in a real certificate (see below).
+- **Self-signed TLS** on first boot — works with modern clients that use XEP-0368 direct-TLS on port 5223. Federation to other servers will fail until you drop in a real certificate (see below).
 - **Registration closed by default**. You provision accounts by hand.
+
+Throughout this README, `<xmpp-domain>` means the full host where the server runs — by default `<app-name>.<zone-domain>`, e.g. `xmpp.andrew.host.imbue.com`. It is **not** the bare zone domain.
 
 ## Ports
 
@@ -69,12 +71,14 @@ Enter a JID (`alice@xmpp.<zone>`), the password you set, and tell the client to 
 
 ## Real TLS certificates
 
-Self-signed is fine for personal-scale use among users who accept the cert once; **federation to other XMPP servers will fail** (their own TLS stack rejects self-signed). To federate, drop a real cert into the data dir:
+Self-signed is fine for personal-scale use among users who accept the cert once; **federation to other XMPP servers will fail** (their own TLS stack rejects self-signed). To federate, drop a real cert into the data dir — the filenames MUST include the full `<xmpp-domain>`, not just the bare zone:
 
 ```
-$OPENHOST_APP_DATA_DIR/certs/<zone>.crt   # fullchain PEM
-$OPENHOST_APP_DATA_DIR/certs/<zone>.key   # private key PEM
+$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.crt   # fullchain PEM
+$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.key   # private key PEM
 ```
+
+E.g. if the server is running at `xmpp.andrew.host.imbue.com`, the files must be `xmpp.andrew.host.imbue.com.crt` / `.key`. Prosody silently falls back to the self-signed cert if the filenames don't match, so a misnamed upload produces no error message — just continued federation failures.
 
 Then:
 
@@ -115,7 +119,7 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 
 - `prosody.cfg.lua` — rendered config (rewritten on each boot from the template).
 - `prosody.sqlite` — accounts, rosters, MAM archive, PEP pubsub, blocklists.
-- `certs/<zone>.crt`, `certs/<zone>.key` — TLS material (self-signed or operator-supplied).
+- `certs/<xmpp-domain>.crt`, `certs/<xmpp-domain>.key` — TLS material (self-signed or operator-supplied).
 - `admin_password.txt` — one-time admin password from first boot.
 - `http_file_share/` — uploaded files from XEP-0363 transfers.
 

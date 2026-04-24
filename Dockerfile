@@ -15,9 +15,10 @@ ARG DEBIAN_FRONTEND=noninteractive
 #
 # We need:
 #   * prosody 13 (from prosody.im's apt repo)
-#   * a Lua 5.4 + luaossl + cyrussasl stack big enough for the modules
-#     we enable (cyrussasl pulls in SCRAM / DIGEST-MD5 support, luaossl
-#     is required for modern TLS on modern Prosody)
+#   * a Lua 5.4 + luasec + cyrussasl stack big enough for the modules
+#     we enable (cyrussasl pulls in SCRAM / DIGEST-MD5 support, lua-sec
+#     provides TLS bindings; Prosody 13 uses LuaSec for its TLS stack,
+#     not the alternative luaossl binding)
 #   * openssl for the self-signed cert bootstrap in start.sh
 #   * python3 for the tiny HTTP status sidecar
 #   * tini so SIGTERM from Docker cleanly propagates to our supervisor
