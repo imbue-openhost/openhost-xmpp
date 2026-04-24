@@ -37,7 +37,10 @@ set -euo pipefail
 log() { printf '[start.sh] %s\n' "$*" >&2; }
 
 DATA_DIR="${OPENHOST_APP_DATA_DIR:-/var/lib/prosody}"
-STATUS_PORT="${STATUS_PORT:-8080}"
+# ``export`` so the Python sidecar (and anything else we launch)
+# sees the value without needing a per-invocation env prefix that a
+# future refactor might accidentally drop.
+export STATUS_PORT="${STATUS_PORT:-8080}"
 
 mkdir -p "$DATA_DIR" "$DATA_DIR/certs" "$DATA_DIR/http_file_share" \
          "$DATA_DIR/plugins"
@@ -130,14 +133,14 @@ log "rendered $CONFIG_FILE"
 #
 # Prosody won't start without a cert for the configured vhost.  We
 # generate an RSA 2048 self-signed cert on first boot with SAN
-# entries for the zone domain, conference.<zone>, and share.<zone>
-# so MUC and http-file-share components can share the same cert.
-# (RSA over ECDSA because a handful of older mobile XMPP clients
-# still choke on ECDSA certs; the perf difference is negligible for
-# personal-scale XMPP.)  The operator can overwrite ``<zone>.crt``
-# / ``<zone>.key`` with real certificates (Let's Encrypt etc.) and
-# ``prosodyctl reload`` — the filenames stay the same so the config
-# keeps working.
+# entries for the XMPP domain, conference.<xmpp-domain>, and
+# share.<xmpp-domain> so the MUC and http-file-share components
+# share the same cert.  (RSA over ECDSA because a handful of older
+# mobile XMPP clients still choke on ECDSA certs; the perf
+# difference is negligible for personal-scale XMPP.)  The operator
+# can overwrite ``<xmpp-domain>.crt`` / ``<xmpp-domain>.key`` with
+# real certificates (Let's Encrypt etc.) and ``prosodyctl reload``
+# — the filenames stay the same so the config keeps working.
 generate_self_signed_cert() {
     # Cleanup strategy: bash's ``trap ... RETURN`` is the natural fit
     # but persists globally and would reference now-stale local
@@ -265,17 +268,31 @@ create_admin_account() {
     # account whose password we can never tell the operator —
     # recovering would mean manually deleting the SQLite row.
     # Writing first, then registering, avoids that.
-    if ! printf '%s\n' "$password" > "$ADMIN_PASSWORD_FILE"; then
-        log "ERROR: failed to write $ADMIN_PASSWORD_FILE"
+    #
+    # The write itself is atomic: write to ``.partial`` then ``mv``
+    # into the final path, so a SIGKILL mid-``printf`` can't leave
+    # an empty password file behind.  This matches the same pattern
+    # used by render_config and generate_self_signed_cert.
+    if ! printf '%s\n' "$password" > "$ADMIN_PASSWORD_FILE.partial"; then
+        log "ERROR: failed to write $ADMIN_PASSWORD_FILE.partial"
+        rm -f "$ADMIN_PASSWORD_FILE.partial" 2>/dev/null || true
         return 1
     fi
-    # prosodyctl register <user> <host> <password>
-    # Piped from stdin isn't supported; we pass it on the command
-    # line.  ``ps aux`` exposure is accepted — this container runs
-    # under OpenHost's single-tenant model with no adversarial
-    # co-resident processes.  The DB file doesn't exist yet, so
-    # prosodyctl will create it with the right schema on first
-    # touch.
+    if ! mv "$ADMIN_PASSWORD_FILE.partial" "$ADMIN_PASSWORD_FILE"; then
+        log "ERROR: failed to mv $ADMIN_PASSWORD_FILE.partial into place"
+        rm -f "$ADMIN_PASSWORD_FILE.partial" 2>/dev/null || true
+        return 1
+    fi
+    # prosodyctl register <user> <host> <password> creates the
+    # account non-interactively.  (The README's ``prosodyctl
+    # adduser`` is the interactive variant, which would prompt the
+    # operator — not what we want at container-boot time.)
+    # Piped from stdin isn't supported by ``register``; we pass the
+    # password on the command line.  ``ps aux`` exposure is
+    # accepted — this container runs under OpenHost's
+    # single-tenant model with no adversarial co-resident
+    # processes.  The DB file doesn't exist yet, so prosodyctl
+    # will create it with the right schema on first touch.
     if ! prosodyctl --config "$CONFIG_FILE" register admin "$DOMAIN" "$password"; then
         log "ERROR: prosodyctl register failed; rolling back password file"
         rm -f "$ADMIN_PASSWORD_FILE" 2>/dev/null || true
@@ -307,7 +324,7 @@ admin_account_exists() {
     # ``CAST(x'...' AS TEXT)`` so its value never touches the SQL
     # text.  This is more portable than ``-cmd '.param set :host'``
     # which only landed in modern sqlite3 CLIs.
-    local domain_hex got stderr
+    local domain_hex account_count stderr
     domain_hex=$(printf '%s' "$DOMAIN" | od -An -tx1 | tr -d ' \n')
     stderr=$(mktemp)
     # Capture sqlite3 stderr to a tempfile instead of discarding it.
@@ -315,9 +332,13 @@ admin_account_exists() {
     # "permission denied" on the db file — gets surfaced to the
     # container log so the operator isn't debugging blind when
     # re-provisioning attempts unexpectedly fire.
-    got=$(sqlite3 "$db" \
+    #
+    # ``tr -d '\n'`` on the stdout in case sqlite3 outputs the count
+    # followed by extra junk or newlines that would break the
+    # arithmetic comparison below.
+    account_count=$(sqlite3 "$db" \
         "SELECT COUNT(*) FROM prosody WHERE host=CAST(x'${domain_hex}' AS TEXT) AND user='admin' AND store='accounts';" \
-        2>"$stderr" || echo ERR)
+        2>"$stderr" | tr -d '\n' || echo ERR)
     # Log anything sqlite3 wrote to stderr, regardless of whether it
     # exited zero.  The two cases we care about:
     #   * non-zero exit + stderr text    → hard query failure
@@ -328,10 +349,18 @@ admin_account_exists() {
         while IFS= read -r line; do log "  $line"; done < "$stderr"
     fi
     rm -f "$stderr"
-    # ``$got`` is "ERR" on non-zero sqlite3 exit, empty if sqlite3
-    # crashed outright, or a decimal count.  Treat any non-positive
-    # integer value as "no account".
-    [[ -n "$got" && "$got" != "ERR" && "$got" -gt 0 ]] 2>/dev/null
+    # ``$account_count`` is "ERR" on non-zero sqlite3 exit, empty
+    # if sqlite3 crashed outright, or a decimal count.  Also guard
+    # against any non-numeric residue (``[[ ... -gt 0 ]]`` would
+    # silently treat non-numeric as 0, but we want explicit intent).
+    if [[ -z "$account_count" || "$account_count" == "ERR" ]]; then
+        return 1
+    fi
+    if [[ ! "$account_count" =~ ^[0-9]+$ ]]; then
+        log "warning: sqlite3 returned non-numeric value: $account_count"
+        return 1
+    fi
+    (( account_count > 0 ))
 }
 
 if ! admin_account_exists; then
@@ -376,7 +405,7 @@ PROSODY_PID=""
 trap 'kill -TERM ${PROSODY_PID:-} ${STATUS_PID:-} 2>/dev/null; wait' TERM INT
 
 log "starting HTTP status sidecar on :$STATUS_PORT"
-STATUS_PORT="$STATUS_PORT" python3 /usr/local/bin/status_server.py &
+python3 /usr/local/bin/status_server.py &
 STATUS_PID=$!
 
 log "starting prosody"

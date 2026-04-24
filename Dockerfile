@@ -42,7 +42,7 @@ RUN apt-get update \
         lua5.4 lua-sec lua-dbi-sqlite3 lua-bitop lua-expat \
         lua-filesystem lua-socket lua-unbound lua-cyrussasl \
         lua-readline \
- && apt-get purge -y gnupg lsb-release wget \
+ && apt-get purge -y curl gnupg lsb-release wget \
  && apt-get autoremove -y --purge \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin

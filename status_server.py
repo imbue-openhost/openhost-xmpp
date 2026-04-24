@@ -238,7 +238,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            TimeoutError,
+        ):
             pass
 
 
