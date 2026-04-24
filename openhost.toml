@@ -1,0 +1,69 @@
+[app]
+name = "xmpp"
+version = "0.1.0"
+description = "Prosody XMPP server with MAM, carbons, stream management, file uploads, and MUC"
+authors = ["Andrew Laack <andrew@laack.co>"]
+
+[runtime.container]
+image = "Dockerfile"
+# The OpenHost router proxies HTTP to this port.  Nothing interesting
+# serves here — it's a tiny sidecar exposing /healthz and a landing
+# page explaining the client-connect URIs.  The actual XMPP protocol
+# lives on the [[ports]] below, which OpenHost publishes on the host
+# directly (bypassing the router).
+port = 8080
+
+# XMPP client-to-server, STARTTLS upgrade path.  Modern clients
+# (Conversations, Dino, Gajim, Monal) all try 5222 with STARTTLS first
+# and fall through to direct-TLS on 5223.
+[[ports]]
+label = "c2s"
+container_port = 5222
+host_port = 5222
+
+# XMPP direct-TLS client-to-server (XEP-0368).  Works out of the box
+# with our self-signed cert for modern clients that honour the cert
+# and XEP-0368 SRV record.  Preferred over STARTTLS on hostile
+# networks that downgrade cleartext XMPP greetings.
+[[ports]]
+label = "c2s-tls"
+container_port = 5223
+host_port = 5223
+
+# Server-to-server federation (STARTTLS).  Without a real cert
+# matching $OPENHOST_ZONE_DOMAIN, federation to other servers will
+# fail with cert validation errors — this port is still open so
+# federation works once the operator drops real certs into the data
+# directory.
+[[ports]]
+label = "s2s"
+container_port = 5269
+host_port = 5269
+
+# Server-to-server direct-TLS (XEP-0368 s2s).
+[[ports]]
+label = "s2s-tls"
+container_port = 5270
+host_port = 5270
+
+[resources]
+# Prosody is Lua: ~50-80 MB RSS idle.  HTTP file uploads and MAM
+# archival each add a modest working set.  256 MB is comfortable for
+# a personal / family-sized server (~50 active users).
+memory_mb = 256
+cpu_millicores = 250
+
+[routing]
+# The HTTP sidecar exposes two paths.  Both are publicly readable
+# because:
+#   * /healthz is used by the router for liveness probes.
+#   * / is a static landing page with only the zone hostname and
+#     client-URI instructions — no credentials, no control plane.
+# The XMPP protocol itself has its own authentication and lives on
+# the [[ports]] above, NOT behind the OpenHost router.
+public_paths = ["/"]
+
+[data]
+# Persistent: SQLite DB with user accounts, roster, MAM archive, PEP
+# pubsub data; admin password stash; TLS cert/key pair.
+app_data = true

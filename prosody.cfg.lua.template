@@ -1,0 +1,183 @@
+-- Prosody configuration template for the OpenHost XMPP app.
+--
+-- ``start.sh`` renders this file into $OPENHOST_APP_DATA_DIR/prosody.cfg.lua
+-- on first boot by replacing the ``@@DOMAIN@@``, ``@@DATA_DIR@@``, and
+-- ``@@ADMIN_JID@@`` placeholders.  The rendered file is what Prosody
+-- actually loads — the template itself is never touched at runtime.
+--
+-- Design notes
+-- ============
+--
+-- * Storage is SQLite (under $OPENHOST_APP_DATA_DIR/prosody.sqlite) rather
+--   than the default internal per-account flat-file format.  SQLite makes
+--   the MAM archive and pubsub data efficient to query, survives backups
+--   better, and halves on-disk IOPS.
+-- * Registration is off by default.  The zone owner creates accounts via
+--   ``prosodyctl adduser``; documented in the README.
+-- * The admin user is ``admin@<zone>``, minted on first boot by start.sh
+--   with a random password in $OPENHOST_APP_DATA_DIR/admin_password.txt.
+-- * TLS is handled by a single cert/key pair at ``$DATA/certs/<zone>.{crt,key}``.
+--   A self-signed pair is generated on first boot; the operator can drop
+--   real Let's Encrypt certs there and ``prosodyctl reload`` to swap in.
+-- * Federation (s2s) is enabled out of the box but will fail to other
+--   servers until real certs are in place — self-signed is rejected by
+--   most federating peers.
+-- * HTTP file sharing (XEP-0363) lives on a sub-component (share.<zone>)
+--   and is backed by prosody's built-in ``http_file_share`` module with a
+--   100 MB per-file cap and a 1 GiB total user quota.  Files live in
+--   $OPENHOST_APP_DATA_DIR/http_file_share.
+-- * Multi-user chat (XEP-0045) runs on conference.<zone>.  Rooms are
+--   persistent by default so a restart doesn't wipe group history.
+
+admins = { "@@ADMIN_JID@@" }
+
+data_path = "@@DATA_DIR@@"
+
+plugin_paths = { "@@DATA_DIR@@/plugins" }
+
+-- Storage backend.  Same DB holds accounts, roster, offline queue,
+-- MAM archive, PEP pubsub, and blocklists.  Prosody auto-creates the
+-- schema on first connect.
+storage = "sql"
+sql = { driver = "SQLite3"; database = "@@DATA_DIR@@/prosody.sqlite"; }
+
+-- In-band registration is disabled.  The zone owner mints accounts via
+-- ``prosodyctl adduser user@<zone>`` from the file-browser-accessible
+-- terminal or ``oh app exec``.  The README documents this.
+allow_registration = false
+
+-- Modules loaded for every virtual host.  See:
+--   https://prosody.im/doc/modules
+modules_enabled = {
+    -- Always-on core
+    "roster";         -- RFC 6121 roster management
+    "saslauth";       -- SASL authentication
+    "tls";            -- STARTTLS
+    "dialback";       -- Server dialback for s2s identity verification
+    "disco";          -- XEP-0030 service discovery
+    "carbons";        -- XEP-0280 message carbons to all logged-in clients
+    "pep";            -- XEP-0163 personal eventing (typing, avatars, ...)
+    "private";        -- XEP-0049 legacy private XML storage
+    "blocklist";      -- XEP-0191 user blocking
+    "vcard4";         -- XEP-0292 modern vcard
+    "vcard_legacy";   -- XEP-0398 avatar/vcard compatibility shim
+    "version";        -- XEP-0092 software version query (we advertise "Prosody")
+    "uptime";         -- XEP-0012 uptime
+    "time";           -- XEP-0202 entity time
+    "ping";           -- XEP-0199 XMPP ping (keepalive)
+    "register";       -- XEP-0077 registration module (needed for pw change even if IBR off)
+
+    -- Modern mobile / multi-device usability
+    "smacks";         -- XEP-0198 stream management & resumption
+    "csi_simple";     -- XEP-0352 client state indication (battery-friendly)
+    "mam";            -- XEP-0313 message archive, synced across clients
+    "bookmarks";      -- XEP-0402/0411 MUC bookmarks sync
+    "cloud_notify";   -- XEP-0357 mobile push notifications (13.0 core)
+
+    -- HTTP stack (BOSH, websockets, file sharing, alt-connect hints)
+    "bosh";
+    "websocket";
+    "http_altconnect"; -- XEP-0156 hint BOSH / WS endpoints to clients
+
+    -- Miscellaneous policy
+    "server_contact_info";  -- XEP-0157 so operators can set help/abuse addrs
+    "limits";               -- Connection-level rate limiting
+    "watchregistrations";   -- Notify admin@ on account creation events
+    "tombstones";           -- Prevent re-registering a deleted account to spoof
+
+    -- Administration
+    "admin_adhoc";    -- XEP-0133 ad-hoc service administration commands
+}
+
+-- Rate limits.  Prosody applies these per-connection; keep them generous
+-- for real clients on lossy mobile networks while still braking bots.
+limits = {
+    c2s = { rate = "50kb/s"; };
+    s2sin = { rate = "300kb/s"; };
+}
+
+-- ssl / legacy_ssl block.  By default we point at a single cert/key pair
+-- that start.sh either generates (self-signed) or loads from an operator-
+-- provided real cert in the same path.  The ``certificates`` dir
+-- convention (prosody <0.12) is bypassed — we name the pair directly.
+ssl = {
+    certificate = "@@DATA_DIR@@/certs/@@DOMAIN@@.crt";
+    key         = "@@DATA_DIR@@/certs/@@DOMAIN@@.key";
+}
+
+-- Direct-TLS C2S (XEP-0368).  Modern clients (Conversations, Dino, Gajim,
+-- Monal) can try this before STARTTLS, which avoids the cleartext greeting
+-- in hostile networks.
+c2s_direct_tls_ports = { 5223 }
+
+-- Direct-TLS S2S (XEP-0368 for server-to-server).
+s2s_direct_tls_ports = { 5270 }
+
+-- HTTP endpoint ports.  5280 = plain, 5281 = HTTPS.  The healthcheck
+-- sidecar lives on 8080 separately; the HTTP stack here is for BOSH,
+-- websocket, and file-share download URIs.
+http_ports = { 5280 }
+https_ports = { 5281 }
+http_interfaces = { "0.0.0.0" }
+https_interfaces = { "0.0.0.0" }
+
+-- Tell the HTTP stack our external URL shape so BOSH / websocket /
+-- file-share URLs advertised to clients resolve outside the container.
+-- ``https://<zone>:5281`` is where browsers and mobile clients will
+-- actually reach us.
+http_external_url = "https://@@DOMAIN@@:5281/"
+https_certificate = "@@DATA_DIR@@/certs/@@DOMAIN@@.crt"
+https_key         = "@@DATA_DIR@@/certs/@@DOMAIN@@.key"
+
+-- Logging: stdout only so `oh app logs xmpp` sees it.  Prosody's default
+-- is a per-level file list; override with a single sink to the void.
+log = {
+    { levels = { min = "info" }; to = "console"; };
+}
+
+-- Turn off daemonization — we want prosody in the foreground so the
+-- container's start.sh can supervise it.
+daemonize = false
+pidfile = nil
+
+-- Authentication backend.  internal_hashed uses bcrypt-derived hashes
+-- stored in the SQL backend; good default.
+authentication = "internal_hashed"
+
+-- ---------------------------------------------------------------------------
+-- VirtualHost: the user-facing domain.  Clients connect as <user>@@@DOMAIN@@
+-- after this is up.
+-- ---------------------------------------------------------------------------
+
+VirtualHost "@@DOMAIN@@"
+    enabled = true
+    -- Per-host contact info users can discover via disco.
+    contact_info = {
+        admin = { "mailto:admin@@@DOMAIN@@", "xmpp:admin@@@DOMAIN@@" };
+    }
+
+-- ---------------------------------------------------------------------------
+-- MUC: multi-user chat on conference.<zone>.  Rooms persist across
+-- restarts (mod_muc's default is in-memory; the SQL storage above
+-- fixes that) and room history is archived via mod_muc_mam.
+-- ---------------------------------------------------------------------------
+
+Component "conference.@@DOMAIN@@" "muc"
+    name = "Chat rooms"
+    modules_enabled = {
+        "muc_mam";             -- XEP-0313 archive for group chats
+    }
+    -- Max archive size per room (messages).  Older messages roll off.
+    max_history_messages = 1000
+
+-- ---------------------------------------------------------------------------
+-- HTTP file share on share.<zone>.  Clients that support XEP-0363 (most
+-- modern ones) will discover this automatically via disco#items on the
+-- root domain.  Max file size and per-user quota are below.
+-- ---------------------------------------------------------------------------
+
+Component "share.@@DOMAIN@@" "http_file_share"
+    http_file_share_size_limit = 100 * 1024 * 1024       -- 100 MiB per file
+    http_file_share_daily_quota = 500 * 1024 * 1024      -- 500 MiB per user per day
+    http_file_share_expires_after = 60 * 60 * 24 * 30    -- 30 days
+    http_file_share_path = "@@DATA_DIR@@/http_file_share"
