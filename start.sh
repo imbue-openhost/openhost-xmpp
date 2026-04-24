@@ -167,7 +167,15 @@ create_admin_account() {
     # the right schema on first touch.
     if prosodyctl --config "$CONFIG_FILE" register admin "$DOMAIN" "$password"; then
         printf '%s\n' "$password" > "$ADMIN_PASSWORD_FILE"
-        chmod 600 "$ADMIN_PASSWORD_FILE"
+        # World-readable by design: the app's data directory is already
+        # scoped to this app's container under OpenHost's data model,
+        # and the zone owner (only entity with file-browser access)
+        # needs to be able to read this file.  Under rootless podman
+        # the xmpp container's ``prosody`` user maps to a different
+        # subuid than file-browser's ``root``, so chmod 600 would
+        # make the password inaccessible to the operator — we trade
+        # filesystem-permission defence in depth for usability here.
+        chmod 644 "$ADMIN_PASSWORD_FILE"
         chown prosody:prosody "$ADMIN_PASSWORD_FILE" 2>/dev/null || true
         log "created admin account; password saved to $ADMIN_PASSWORD_FILE"
         return 0
@@ -195,6 +203,13 @@ if ! admin_account_exists; then
     create_admin_account
 else
     log "admin account already provisioned; skipping"
+fi
+
+# Every boot: ensure the admin password file (if present) is readable by
+# the operator's file-browser container.  See the comment on
+# create_admin_account's chmod for why 644 rather than 600.
+if [[ -f "$ADMIN_PASSWORD_FILE" ]]; then
+    chmod 644 "$ADMIN_PASSWORD_FILE"
 fi
 
 # --- supervise prosody + the status sidecar --------------------------
