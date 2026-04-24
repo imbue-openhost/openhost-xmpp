@@ -20,7 +20,10 @@
 --   with a random password in $OPENHOST_APP_DATA_DIR/admin_password.txt.
 -- * TLS is handled by a single cert/key pair at ``$DATA/certs/<xmpp-domain>.{crt,key}``.
 --   A self-signed pair is generated on first boot; the operator can drop
---   real Let's Encrypt certs there and ``prosodyctl reload`` to swap in.
+--   real Let's Encrypt certs there and restart the container to swap
+--   them in.  (We don't suggest ``prosodyctl reload`` because Prosody
+--   runs here in the foreground without a pidfile, so prosodyctl
+--   cannot find the running process to signal.)
 -- * Federation (s2s) is enabled out of the box but will fail to other
 --   servers until real certs are in place — self-signed is rejected by
 --   most federating peers.
@@ -84,7 +87,7 @@ modules_enabled = {
     -- Miscellaneous policy
     "server_contact_info";  -- XEP-0157 so operators can set help/abuse addrs
     "limits";               -- Connection-level rate limiting
-    "watchregistrations";   -- Notify admin@ on account creation events
+    "watchregistrations";   -- Notify admins on account creation events
     "tombstones";           -- Prevent re-registering a deleted account to spoof
 
     -- Administration

@@ -86,10 +86,15 @@ log "DATA_DIR=$DATA_DIR"
 sed_escape() {
     # Escape ``|`` (our delimiter), ``&`` (sed's match-reference),
     # and ``\`` (the escape char itself) in the replacement side of
-    # a ``sed`` substitution.  We do NOT escape newlines — sed's
-    # replacement side can't contain unescaped newlines and a value
-    # with an embedded newline is almost certainly an operator typo;
-    # fail loudly rather than silently.
+    # a ``sed`` substitution.  Newlines are intentionally NOT
+    # escaped: sed on the invocation line treats a newline as a
+    # command separator, so a value with an embedded newline will
+    # produce a malformed sed command and abort the shell under
+    # ``set -e``.  That's the desired outcome — we'd rather
+    # short-circuit with a sed error than continue with a corrupted
+    # config.  JIDs and paths never contain newlines in legitimate
+    # use, so this edge case only bites if ``$XMPP_DOMAIN`` was set
+    # to something bizarre by the operator.
     printf '%s' "$1" | sed -e 's/[|&\\]/\\&/g'
 }
 
@@ -139,8 +144,11 @@ log "rendered $CONFIG_FILE"
 # mobile XMPP clients still choke on ECDSA certs; the perf
 # difference is negligible for personal-scale XMPP.)  The operator
 # can overwrite ``<xmpp-domain>.crt`` / ``<xmpp-domain>.key`` with
-# real certificates (Let's Encrypt etc.) and ``prosodyctl reload``
-# — the filenames stay the same so the config keeps working.
+# real certificates (Let's Encrypt etc.) and restart the container
+# to pick them up — the filenames stay the same so the config keeps
+# working.  We don't use ``prosodyctl reload`` because Prosody here
+# runs in the foreground without a pidfile, so prosodyctl has no
+# way to locate the running process.
 generate_self_signed_cert() {
     # Cleanup strategy: bash's ``trap ... RETURN`` and ``trap ...
     # ERR`` both persist globally past the function's return and
@@ -164,7 +172,11 @@ generate_self_signed_cert() {
               "$KEY_FILE.orphan" "$CERT_FILE.orphan" 2>/dev/null || true
     }
 
-    cat > "$cnf" <<EOF
+    # Heredoc writes the openssl config to the tempfile.  Check the
+    # exit status explicitly because ``set -e`` is suppressed inside
+    # our ``if !`` caller context (bash quirk); a silent disk-full
+    # here would otherwise feed openssl an empty config file.
+    if ! cat > "$cnf" <<EOF
 [req]
 default_bits = 2048
 distinguished_name = dn
@@ -182,6 +194,11 @@ DNS.1 = ${DOMAIN}
 DNS.2 = conference.${DOMAIN}
 DNS.3 = share.${DOMAIN}
 EOF
+    then
+        log "ERROR: writing openssl config to $cnf failed"
+        _sscert_cleanup
+        return 1
+    fi
     # Write to ``.partial`` first so a crash mid-write doesn't leave
     # a half-written file that the boot-time guard mistakes for a
     # usable cert.  Leave openssl's stderr visible so a failure
@@ -343,7 +360,10 @@ admin_account_exists() {
     # which only landed in modern sqlite3 CLIs.
     local domain_hex account_count stderr
     domain_hex=$(printf '%s' "$DOMAIN" | od -An -tx1 | tr -d ' \n')
-    stderr=$(mktemp)
+    if ! stderr=$(mktemp 2>/dev/null) || [[ -z "$stderr" ]]; then
+        log "warning: mktemp failed; skipping admin-account existence check"
+        return 1
+    fi
     # Capture sqlite3 stderr to a tempfile instead of discarding it.
     # Any diagnostic — "database is locked", "no such table",
     # "permission denied" on the db file — gets surfaced to the
