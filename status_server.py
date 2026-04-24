@@ -133,9 +133,8 @@ _HTML_TEMPLATE = """<!doctype html>
        client, or drop a real cert/key pair named
        <code>&lt;xmpp-domain&gt;.crt</code> +
        <code>&lt;xmpp-domain&gt;.key</code> into
-       <code>$OPENHOST_APP_DATA_DIR/certs/</code> on your OpenHost
-       host to replace it, then reload Prosody from the host:
-       <code>oh app exec xmpp prosodyctl reload</code>.</p>
+       <code>$OPENHOST_APP_DATA_DIR/certs/</code> and restart the
+       app from the OpenHost dashboard to pick the new cert up.</p>
     <p>Recommended clients:
        <a href="https://conversations.im/">Conversations</a> (Android),
        <a href="https://dino.im/">Dino</a> (Linux),

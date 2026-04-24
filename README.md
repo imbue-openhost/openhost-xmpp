@@ -80,11 +80,9 @@ $OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.key   # private key PEM
 
 E.g. if the server is running at `xmpp.andrew.host.imbue.com`, the files must be `xmpp.andrew.host.imbue.com.crt` / `.key`. Prosody silently falls back to the self-signed cert if the filenames don't match, so a misnamed upload produces no error message — just continued federation failures.
 
-Then:
+Then restart the container via the OpenHost dashboard (click the app → Restart) or `oh app restart xmpp`. Prosody picks up the new cert from disk on every boot.
 
-```bash
-oh app exec xmpp prosodyctl reload
-```
+(`prosodyctl reload` is the usual Prosody command for this, but this app runs Prosody in the foreground with `daemonize = false` and no pidfile, so there's no pidfile for `prosodyctl` to find. A container restart is the simplest reliable path.)
 
 The easiest way to get a real cert today: DNS-01 with `acme.sh` / `certbot` / `lego` on a machine you control, then upload via the file-browser app.
 

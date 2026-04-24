@@ -152,11 +152,13 @@ generate_self_signed_cert() {
         log "ERROR: mktemp failed"
         return 1
     fi
-    # Inline cleanup — avoid a nested function which (a) would
-    # pollute bash's global function namespace with a generic name
-    # after this function returns, and (b) would capture ``$cnf``
-    # by name, finding an unset value after the enclosing function
-    # returned on a later call.
+    # Local helper.  Note: bash "defines" it into the global
+    # function namespace on first call, and its body references
+    # ``$cnf`` which is a local of ``generate_self_signed_cert`` —
+    # so the helper is only meaningful while we're inside the
+    # enclosing function.  That's fine here: every call site is
+    # below, inside this function, and the helper's distinctive
+    # name (``_sscert_cleanup``) avoids any plausible collision.
     _sscert_cleanup() {
         rm -f "$cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" \
               "$KEY_FILE.orphan" "$CERT_FILE.orphan" 2>/dev/null || true
@@ -251,11 +253,11 @@ fi
 
 # --- admin account + password ---------------------------------------
 #
-# prosodyctl adduser requires prosody to NOT be running (it writes
-# the accounts table directly through the storage backend).  We
-# invoke it with the rendered config via the ``--config`` flag.  The
-# storage backend is SQLite here, so we just need the DB file at the
-# configured path — which prosodyctl creates on first use.
+# prosodyctl register writes directly through the configured storage
+# backend (SQLite here), so it requires prosody to NOT be running.
+# We invoke it with the rendered config via the ``--config`` flag.
+# The DB file doesn't need to exist yet; prosodyctl creates it on
+# first use with the right schema.
 create_admin_account() {
     local password
     # 24 hex chars of randomness = 96 bits.  We use hex rather than
