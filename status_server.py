@@ -26,7 +26,9 @@ This module exposes two endpoints:
 
 from __future__ import annotations
 
+import html
 import os
+import re
 import socket
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,6 +42,15 @@ PORT = int(os.environ.get("STATUS_PORT", "8080"))
 PROBE_HOST = "127.0.0.1"
 PROBE_PORT = 5222
 PROBE_TIMEOUT_SECONDS = 1.0
+
+# Permissive but safe hostname shape: labels of [A-Za-z0-9-] up to
+# 63 chars, separated by dots, total up to 253 chars.  Values that
+# don't match go through as "your-openhost-zone" instead of getting
+# reflected in the landing page.
+_VALID_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)"
+    r"(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+)
 
 
 def _prosody_up() -> bool:
@@ -98,8 +109,11 @@ _HTML_TEMPLATE = """<!doctype html>
           networks that strip or downgrade plaintext greetings.</li>
     </ul>
     <p>Self-signed certificate on first boot — accept it once in your
-       client, or drop a real <code>fullchain.pem</code> + <code>privkey.pem</code>
-       pair into the app's data directory to replace.</p>
+       client, or drop a real cert/key pair named
+       <code>&lt;zone&gt;.crt</code> + <code>&lt;zone&gt;.key</code>
+       (matching this server's XMPP domain) into
+       <code>$OPENHOST_APP_DATA_DIR/certs/</code> to replace it, then
+       <code>prosodyctl reload</code>.</p>
     <p>Recommended clients:
        <a href="https://conversations.im/">Conversations</a> (Android),
        <a href="https://dino.im/">Dino</a> (Linux),
@@ -149,14 +163,28 @@ class Handler(BaseHTTPRequestHandler):
             # Prefer X-Forwarded-Host: inside the container the raw
             # Host header is the OpenHost router's loopback, which is
             # useless for a user pasting into a client.
-            host = (
+            raw_host = (
                 self.headers.get("X-Forwarded-Host")
                 or self.headers.get("Host")
                 or "your-openhost-zone"
             )
-            # Strip any port from the forwarded host — XMPP clients want
-            # a bare hostname to resolve SRV records against.
-            host = host.split(":", 1)[0]
+            # The header is attacker-controlled from the public
+            # internet (``public_paths = ["/"]`` in openhost.toml
+            # makes this endpoint reachable without auth).  Three
+            # layers of defence before the value reaches the HTML:
+            #
+            #   1. Strip any port suffix — XMPP clients want a bare
+            #      hostname for SRV lookup.
+            #   2. Reject anything that isn't a plausible DNS label
+            #      so a weird value (quotes, angle brackets, ...)
+            #      can't leak even if the next step slips.
+            #   3. html.escape() the final value before it goes into
+            #      the template.  Belt, suspenders, and a backup pair
+            #      of belt-suspenders.
+            host = raw_host.split(":", 1)[0]
+            if not _VALID_HOSTNAME_RE.match(host):
+                host = "your-openhost-zone"
+            host = html.escape(host, quote=True)
             body = (
                 _HTML_TEMPLATE
                 .replace("@@STATUS_CLASS@@", "status-ok" if up else "status-bad")

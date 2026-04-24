@@ -22,7 +22,9 @@
 #   * Start the HTTP status sidecar on :8080 (satisfies the OpenHost
 #     router's health-check requirement; the XMPP protocol lives on
 #     the ``[[ports]]`` declared in openhost.toml).
-#   * Exec prosody in the foreground.
+#   * Start prosody in the foreground as a background job of this
+#     shell, and use ``wait -n`` to supervise both children.  If
+#     either exits the container exits too so OpenHost restarts it.
 
 set -euo pipefail
 
@@ -78,15 +80,20 @@ render_config() {
         log "FATAL: template missing at $tmpl (image build bug?)"
         exit 1
     fi
-    # Escape the placeholders' replacements for sed: the only tricky
-    # character in paths and JIDs is ``/``.  Domain can't contain
-    # special chars because it went through resolve_domain's sprintf.
-    local esc_data_dir
-    esc_data_dir=$(printf '%s' "$DATA_DIR" | sed -e 's/[\/&]/\\&/g')
+    # Sanitise the substitutions for sed.  Any of ``/``, ``&``, or the
+    # delimiter character in the ``s`` command could corrupt the
+    # substitution; we don't trust ``$XMPP_DOMAIN`` (operator-supplied
+    # env var) so all three placeholders go through the same escaper.
+    # We use ``|`` as the sed delimiter to avoid collisions with ``/``
+    # in paths.
+    local esc_data_dir esc_domain esc_admin_jid
+    esc_data_dir=$(printf '%s' "$DATA_DIR" | sed -e 's/[|&\\]/\\&/g')
+    esc_domain=$(printf '%s' "$DOMAIN" | sed -e 's/[|&\\]/\\&/g')
+    esc_admin_jid=$(printf '%s' "$ADMIN_JID" | sed -e 's/[|&\\]/\\&/g')
     sed \
-        -e "s/@@DOMAIN@@/${DOMAIN}/g" \
+        -e "s|@@DOMAIN@@|${esc_domain}|g" \
         -e "s|@@DATA_DIR@@|${esc_data_dir}|g" \
-        -e "s/@@ADMIN_JID@@/${ADMIN_JID}/g" \
+        -e "s|@@ADMIN_JID@@|${esc_admin_jid}|g" \
         "$tmpl" > "$CONFIG_FILE"
     chmod 640 "$CONFIG_FILE"
     # Prosody must be able to read its config; running as the
@@ -101,15 +108,23 @@ log "rendered $CONFIG_FILE"
 # --- self-signed TLS cert bootstrap ----------------------------------
 #
 # Prosody won't start without a cert for the configured vhost.  We
-# generate an ECDSA P-256 + SHA-256 self-signed cert on first boot.
-# It covers the zone domain, conference.<zone>, and share.<zone> so
-# MUC and http-file-share components can share the same cert.  The
-# operator can overwrite ``<zone>.crt`` / ``<zone>.key`` with real
-# certificates (Let's Encrypt etc.) and ``prosodyctl reload`` — the
-# filenames stay the same so the config keeps working.
+# generate an RSA 2048 self-signed cert on first boot with SAN
+# entries for the zone domain, conference.<zone>, and share.<zone>
+# so MUC and http-file-share components can share the same cert.
+# (RSA over ECDSA because a handful of older mobile XMPP clients
+# still choke on ECDSA certs; the perf difference is negligible for
+# personal-scale XMPP.)  The operator can overwrite ``<zone>.crt``
+# / ``<zone>.key`` with real certificates (Let's Encrypt etc.) and
+# ``prosodyctl reload`` — the filenames stay the same so the config
+# keeps working.
 generate_self_signed_cert() {
     local cnf
     cnf=$(mktemp)
+    # Clean up the config file on every exit path — crucial because
+    # ``set -euo pipefail`` at the script level means a failing
+    # ``openssl req`` below will abort the function before the
+    # post-openssl ``rm -f "$cnf"`` line can run otherwise.
+    trap 'rm -f "$cnf"' RETURN
     cat > "$cnf" <<EOF
 [req]
 default_bits = 2048
@@ -128,12 +143,22 @@ DNS.1 = ${DOMAIN}
 DNS.2 = conference.${DOMAIN}
 DNS.3 = share.${DOMAIN}
 EOF
+    # Leave openssl's stderr visible so a failure (bad config,
+    # entropy starvation, permission error) shows up in the
+    # container log rather than the script dying silently with no
+    # diagnostic.  stdout is routine progress so we drop it.
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout "$KEY_FILE" -out "$CERT_FILE" \
         -days 825 -config "$cnf" -extensions v3_req \
-        >/dev/null 2>&1
-    rm -f "$cnf"
+        >/dev/null
     chmod 640 "$CERT_FILE" "$KEY_FILE"
+    # Ownership: we'd prefer root:prosody so the prosody user can
+    # read but not overwrite its own private key.  In practice the
+    # ``chown -R prosody:prosody "$DATA_DIR"`` below will flatten
+    # this anyway under rootless podman (where the "root" user
+    # inside the container maps to an unprivileged host uid).  We
+    # leave the attempt in so on a Docker deployment where it sticks,
+    # the private key stays protected from Prosody's own process.
     chown root:prosody "$CERT_FILE" "$KEY_FILE" 2>/dev/null || true
 }
 
@@ -192,15 +217,34 @@ admin_account_exists() {
     if [[ ! -s "$db" ]]; then
         return 1
     fi
-    local got
+    # We pass the domain via parameter binding — sqlite3 CLI
+    # supports ``-cmd '.param set :host "..."'`` so the untrusted
+    # ``$DOMAIN`` value never touches the SQL text.  Simpler
+    # alternative that works across sqlite3 versions: hex-encode the
+    # bytes and decode them back in SQL.  We use the hex trick
+    # because older sqlite3 CLIs don't support .param.
+    local domain_hex got
+    domain_hex=$(printf '%s' "$DOMAIN" | od -An -tx1 | tr -d ' \n')
     got=$(sqlite3 "$db" \
-        "SELECT COUNT(*) FROM prosody WHERE host='${DOMAIN}' AND user='admin' AND store='accounts';" \
+        "SELECT COUNT(*) FROM prosody WHERE host=CAST(x'${domain_hex}' AS TEXT) AND user='admin' AND store='accounts';" \
         2>/dev/null || echo 0)
-    [[ "$got" == "1" ]]
+    # Use -gt 0 not == 1 so duplicate rows (from a hypothetical
+    # schema migration that left both copies) don't trick us into
+    # creating a second ``admin`` account with a different password.
+    [[ "$got" -gt 0 ]] 2>/dev/null
 }
 
 if ! admin_account_exists; then
-    create_admin_account
+    # Guard: ``set -e`` is deliberately suppressed inside ``if !``
+    # branch bodies by bash, so we have to check the return value
+    # explicitly.  A silent failure here would produce a running
+    # container with no admin account and no admin_password.txt —
+    # operators would discover the issue only when they tried to
+    # log in.
+    if ! create_admin_account; then
+        log "FATAL: admin account provisioning failed; container will exit"
+        exit 1
+    fi
 else
     log "admin account already provisioned; skipping"
 fi

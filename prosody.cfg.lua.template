@@ -24,8 +24,8 @@
 --   most federating peers.
 -- * HTTP file sharing (XEP-0363) lives on a sub-component (share.<zone>)
 --   and is backed by prosody's built-in ``http_file_share`` module with a
---   100 MB per-file cap and a 1 GiB total user quota.  Files live in
---   $OPENHOST_APP_DATA_DIR/http_file_share.
+--   100 MiB per-file cap, a 500 MiB per-user-per-day rolling quota, and
+--   a 30-day expiry.  Files live in $OPENHOST_APP_DATA_DIR/http_file_share.
 -- * Multi-user chat (XEP-0045) runs on conference.<zone>.  Rooms are
 --   persistent by default so a restart doesn't wipe group history.
 

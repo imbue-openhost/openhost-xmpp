@@ -11,15 +11,19 @@ Prosody XMPP server packaged as an OpenHost app.
 
 ## Ports
 
-| Port       | Protocol | Purpose                                                                  |
-|------------|----------|--------------------------------------------------------------------------|
-| 5222/tcp   | TCP      | c2s STARTTLS — what most XMPP clients try first                          |
-| 5223/tcp   | TCP      | c2s direct TLS (XEP-0368) — recommended on hostile networks              |
-| 5269/tcp   | TCP      | s2s STARTTLS — server-to-server federation                               |
-| 5270/tcp   | TCP      | s2s direct TLS — XEP-0368 for federation                                 |
-| 8080/tcp   | HTTP     | Status + landing page exposed via the OpenHost router                    |
+| Port       | Protocol | Purpose                                                                       |
+|------------|----------|-------------------------------------------------------------------------------|
+| 5222/tcp   | TCP      | c2s STARTTLS — what most XMPP clients try first                               |
+| 5223/tcp   | TCP      | c2s direct TLS (XEP-0368) — recommended on hostile networks                   |
+| 5269/tcp   | TCP      | s2s STARTTLS — server-to-server federation                                    |
+| 5270/tcp   | TCP      | s2s direct TLS — XEP-0368 for federation                                      |
+| 5280/tcp   | HTTP     | BOSH, XMPP-over-WebSocket, file-share downloads (plain HTTP)                  |
+| 5281/tcp   | HTTPS    | Same as 5280 over TLS — what modern clients use for HTTP file transfer       |
+| 8080/tcp   | HTTP     | Health-check + landing page exposed via the OpenHost router                   |
 
-The XMPP ports are declared in `[[ports]]` and published directly on the host's `0.0.0.0` by OpenHost — they bypass Caddy and the OpenHost router. On Hetzner the default firewall is open; on EC2 you'll need to amend the security group in `openhost-vm-manager` to allow inbound `5222, 5223, 5269, 5270`.
+The XMPP + HTTP ports are declared in `[[ports]]` and published directly on the host's `0.0.0.0` by OpenHost — they bypass Caddy and the OpenHost router. On Hetzner the default firewall is open; on EC2 you'll need to amend the security group in `openhost-vm-manager` to allow inbound `5222, 5223, 5269, 5270, 5280, 5281`.
+
+Ports 5280/5281 are required for **HTTP file transfer (XEP-0363)** to work — without them a client can upload a file but nobody else can download it. They're also used by web-based XMPP clients and by native clients that fall back to BOSH on networks that block non-443 TCP.
 
 ## Getting started
 

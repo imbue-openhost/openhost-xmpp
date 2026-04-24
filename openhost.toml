@@ -46,6 +46,24 @@ label = "s2s-tls"
 container_port = 5270
 host_port = 5270
 
+# HTTP — BOSH (XEP-0124/0206), XMPP-over-WebSocket (RFC 7395), and
+# HTTP file-share (XEP-0363) are all served by Prosody on 5280/5281.
+# Needed for: web-based XMPP clients (Converse.js, Movim), mobile
+# clients pinning XEP-0368 that still want file-share HTTPS, and
+# XEP-0156 alternative-connection hints.  The OpenHost router only
+# proxies a single port (``port = 8080`` above, the healthcheck
+# sidecar); clients reach BOSH/WS/file-share at the zone hostname on
+# these ports directly.
+[[ports]]
+label = "http"
+container_port = 5280
+host_port = 5280
+
+[[ports]]
+label = "https"
+container_port = 5281
+host_port = 5281
+
 [resources]
 # Prosody is Lua: ~50-80 MB RSS idle.  HTTP file uploads and MAM
 # archival each add a modest working set.  256 MB is comfortable for
