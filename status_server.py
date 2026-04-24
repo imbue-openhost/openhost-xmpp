@@ -191,18 +191,21 @@ class Handler(BaseHTTPRequestHandler):
             )
             # The header is attacker-controlled from the public
             # internet (``public_paths = ["/"]`` in openhost.toml
-            # makes this endpoint reachable without auth).  Three
+            # makes this endpoint reachable without auth).  Four
             # layers of defence before the value reaches the HTML:
             #
-            #   1. Strip any port suffix — XMPP clients want a bare
+            #   1. Split on comma — per RFC 7239 a forwarded-host
+            #      header may be a comma-separated list when the
+            #      request passes through multiple proxies.  The
+            #      client-originated hostname is the FIRST entry.
+            #   2. Strip any port suffix — XMPP clients want a bare
             #      hostname for SRV lookup.
-            #   2. Reject anything that isn't a plausible DNS label
+            #   3. Reject anything that isn't a plausible DNS label
             #      so a weird value (quotes, angle brackets, ...)
             #      can't leak even if the next step slips.
-            #   3. html.escape() the final value before it goes into
-            #      the template.  Belt, suspenders, and a backup pair
-            #      of belt-suspenders.
-            host = raw_host.split(":", 1)[0]
+            #   4. html.escape() the final value before it goes into
+            #      the template.
+            host = raw_host.split(",", 1)[0].strip().split(":", 1)[0]
             if not _VALID_HOSTNAME_RE.match(host):
                 host = "your-openhost-zone"
             host = html.escape(host, quote=True)
@@ -223,12 +226,11 @@ class Handler(BaseHTTPRequestHandler):
         # A client can disconnect at any point — not just during
         # ``wfile.write(body)``.  All of ``send_response``,
         # ``send_header``, and ``end_headers`` also write to the
-        # socket and will raise ``BrokenPipeError`` /
-        # ``ConnectionResetError`` / ``TimeoutError`` (all subclasses
-        # of ``OSError``) when the client is gone.  Wrap the whole
-        # response write in a single ``OSError`` catch so the
-        # supervisor doesn't get a noisy traceback for every
-        # half-connected client.
+        # socket and will raise one of these exceptions when the
+        # client is gone.  We catch the narrow list rather than
+        # ``OSError`` so genuine server-side failures (ENOSPC / disk
+        # full, EBADF / bad file descriptor, EPERM / permission
+        # denied on the socket) still propagate and get logged.
         try:
             self.send_response(code)
             self.send_header("Content-Type", content_type)
@@ -236,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
-        except OSError:
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
 
 

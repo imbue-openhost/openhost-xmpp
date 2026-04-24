@@ -80,22 +80,31 @@ log "DATA_DIR=$DATA_DIR"
 # so changes to the template (from image updates) actually take
 # effect.  Only the stateful bits — accounts (SQLite), admin password,
 # cert pair — persist across boots.
+sed_escape() {
+    # Escape ``|`` (our delimiter), ``&`` (sed's match-reference),
+    # and ``\`` (the escape char itself) in the replacement side of
+    # a ``sed`` substitution.  We do NOT escape newlines — sed's
+    # replacement side can't contain unescaped newlines and a value
+    # with an embedded newline is almost certainly an operator typo;
+    # fail loudly rather than silently.
+    printf '%s' "$1" | sed -e 's/[|&\\]/\\&/g'
+}
+
 render_config() {
     local tmpl=/usr/local/share/openhost-xmpp/prosody.cfg.lua.template
     if [[ ! -f "$tmpl" ]]; then
         log "FATAL: template missing at $tmpl (image build bug?)"
         exit 1
     fi
-    # Sanitise the substitutions for sed.  Any of ``/``, ``&``, or the
-    # delimiter character in the ``s`` command could corrupt the
-    # substitution; we don't trust ``$XMPP_DOMAIN`` (operator-supplied
-    # env var) so all three placeholders go through the same escaper.
-    # We use ``|`` as the sed delimiter to avoid collisions with ``/``
-    # in paths.
+    # Sanitise the substitutions for sed.  Any of ``|`` (our
+    # delimiter), ``&``, or ``\`` could corrupt the substitution;
+    # ``$XMPP_DOMAIN`` is operator-supplied so all three
+    # placeholders go through the same escaper.  ``|`` as the sed
+    # delimiter avoids collisions with ``/`` in paths.
     local esc_data_dir esc_domain esc_admin_jid
-    esc_data_dir=$(printf '%s' "$DATA_DIR" | sed -e 's/[|&\\]/\\&/g')
-    esc_domain=$(printf '%s' "$DOMAIN" | sed -e 's/[|&\\]/\\&/g')
-    esc_admin_jid=$(printf '%s' "$ADMIN_JID" | sed -e 's/[|&\\]/\\&/g')
+    esc_data_dir=$(sed_escape "$DATA_DIR")
+    esc_domain=$(sed_escape "$DOMAIN")
+    esc_admin_jid=$(sed_escape "$ADMIN_JID")
     # Atomic write: stage the rendered config to ``.partial`` then
     # ``mv`` into place so a SIGKILL between shell-redirect truncation
     # and sed completion can't leave the container rebooting into an
@@ -130,18 +139,21 @@ log "rendered $CONFIG_FILE"
 # ``prosodyctl reload`` — the filenames stay the same so the config
 # keeps working.
 generate_self_signed_cert() {
+    # Cleanup strategy: bash's ``trap ... RETURN`` is the natural fit
+    # but persists globally and would reference now-stale local
+    # variables on later function returns.  Instead, do explicit
+    # cleanup on both exit paths below: the happy path unconditionally
+    # removes the config tempfile before returning, and the sad
+    # path does the same via a ``|| { cleanup; return 1; }`` rescue
+    # idiom.  We deliberately avoid ERR trap here because it persists
+    # globally like RETURN does, and having it fire on a later, unrelated
+    # ERR in this script would reference stale ``$KEY_FILE.partial``
+    # paths.
     local cnf
     cnf=$(mktemp)
-    # Cleanup strategy: we can't use ``trap ... RETURN`` because
-    # bash's RETURN trap is NOT scoped to this function — it
-    # persists and fires on every subsequent function return in the
-    # shell, and ``$cnf`` will be unset then (``set -u`` would
-    # abort).  Instead, do a best-effort cleanup on both happy
-    # (post-openssl) and sad (openssl failure via an explicit
-    # trap-then-unset on ERR) paths.
-    local _cleanup_cnf="$cnf"
-    _cleanup() { rm -f "$_cleanup_cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" 2>/dev/null || true; }
-    trap _cleanup ERR
+    _cleanup_partials() {
+        rm -f "$cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" 2>/dev/null || true
+    }
 
     cat > "$cnf" <<EOF
 [req]
@@ -161,35 +173,47 @@ DNS.1 = ${DOMAIN}
 DNS.2 = conference.${DOMAIN}
 DNS.3 = share.${DOMAIN}
 EOF
-    # Write to ``.partial`` first so a crash mid-write doesn't leave a
-    # half-written file that the boot-time guard mistakes for a
-    # usable cert.  On success we atomically rename into place.
-    # Leave openssl's stderr visible so a failure (bad config,
-    # entropy starvation, permission error) shows up in the
-    # container log rather than the script dying silently with no
-    # diagnostic.  stdout is routine progress so we drop it.
-    openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout "$KEY_FILE.partial" -out "$CERT_FILE.partial" \
-        -days 825 -config "$cnf" -extensions v3_req \
-        >/dev/null
-    mv "$KEY_FILE.partial" "$KEY_FILE"
-    mv "$CERT_FILE.partial" "$CERT_FILE"
-    rm -f "$cnf"
-    trap - ERR
+    # Write to ``.partial`` first so a crash mid-write doesn't leave
+    # a half-written file that the boot-time guard mistakes for a
+    # usable cert.  Leave openssl's stderr visible so a failure
+    # (bad config, entropy starvation, permission error) surfaces in
+    # the container log rather than the script dying with no trace.
+    if ! openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$KEY_FILE.partial" -out "$CERT_FILE.partial" \
+            -days 825 -config "$cnf" -extensions v3_req \
+            >/dev/null; then
+        log "ERROR: openssl cert generation failed"
+        _cleanup_partials
+        return 1
+    fi
+    # Atomic rename.  If either ``mv`` fails (permission on
+    # $DATA_DIR, say) we end up with a .partial file on disk; clean
+    # it up so the next boot's ``-s`` check of the real cert path
+    # can't get confused.
+    if ! { mv "$KEY_FILE.partial" "$KEY_FILE" && mv "$CERT_FILE.partial" "$CERT_FILE"; }; then
+        log "ERROR: unable to move cert/key into place"
+        _cleanup_partials
+        return 1
+    fi
+    _cleanup_partials
     chmod 640 "$CERT_FILE" "$KEY_FILE"
     # Ownership: we'd prefer root:prosody so the prosody user can
     # read but not overwrite its own private key.  In practice the
     # ``chown -R prosody:prosody "$DATA_DIR"`` below will flatten
     # this anyway under rootless podman (where the "root" user
     # inside the container maps to an unprivileged host uid).  We
-    # leave the attempt in so on a Docker deployment where it sticks,
-    # the private key stays protected from Prosody's own process.
+    # leave the attempt in so on a Docker deployment where it
+    # sticks, the private key stays protected from Prosody's own
+    # process.
     chown root:prosody "$CERT_FILE" "$KEY_FILE" 2>/dev/null || true
 }
 
 if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
     log "generating self-signed TLS cert for $DOMAIN (+ conference., share.)"
-    generate_self_signed_cert
+    if ! generate_self_signed_cert; then
+        log "FATAL: self-signed cert bootstrap failed"
+        exit 1
+    fi
 else
     log "reusing existing cert/key at $CERT_FILE"
 fi
@@ -224,7 +248,17 @@ create_admin_account() {
     # of base64 would silently shrink the password.  96 bits is well
     # over the threshold for offline-brute-force resistance on a
     # bcrypt-stretched hash in practical scenarios.
-    password=$(openssl rand -hex 12)
+    #
+    # We call this from inside ``if ! create_admin_account`` which
+    # suppresses ``set -e`` for the whole function body (bash
+    # quirk).  Belt-and-braces: explicitly check that the
+    # password-generation command actually produced output before
+    # we go on to register an account with an empty string.
+    password=$(openssl rand -hex 12) || true
+    if [[ ${#password} -ne 24 ]]; then
+        log "ERROR: openssl rand -hex 12 produced unexpected output (len=${#password})"
+        return 1
+    fi
     # Stage the password file BEFORE calling prosodyctl.  If
     # prosodyctl succeeds but the file write subsequently fails
     # (disk full / weird filesystem), we'd end up with an admin
