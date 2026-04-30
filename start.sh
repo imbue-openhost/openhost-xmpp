@@ -441,8 +441,22 @@ STATUS_PID=""
 PROSODY_PID=""
 trap 'kill -TERM ${PROSODY_PID:-} ${STATUS_PID:-} 2>/dev/null; wait' TERM INT
 
-log "starting HTTP status sidecar on :$STATUS_PORT"
-python3 /usr/local/bin/status_server.py &
+# Sidecar reads its host from $XMPP_RESOLVED_DOMAIN to construct
+# JIDs (``<user>@$XMPP_RESOLVED_DOMAIN``) for prosodyctl admin-shell
+# calls.  We export the resolved domain explicitly so the sidecar
+# doesn't have to repeat the env-var-vs-fallback logic this script
+# already implements.
+export XMPP_RESOLVED_DOMAIN="$DOMAIN"
+
+log "starting HTTP sidecar on :$STATUS_PORT (status + owner-only user management)"
+# Run the Starlette app via the venv'd uvicorn.  ``--app-dir`` lets
+# uvicorn find ``server:app`` without the sidecar dir being on the
+# system Python's import path.
+/opt/sidecar-venv/bin/uvicorn \
+    --app-dir /usr/local/share/openhost-xmpp/sidecar \
+    --host 0.0.0.0 --port "$STATUS_PORT" \
+    --log-level warning \
+    server:app &
 STATUS_PID=$!
 
 log "starting prosody"
