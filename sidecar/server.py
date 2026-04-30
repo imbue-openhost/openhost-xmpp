@@ -744,12 +744,14 @@ async def create_user_api(request: Request) -> JSONResponse:
         )
     except ProsodyctlError as exc:
         # ``user create`` does NOT distinguish "exists" from other
-        # errors via exit code, so we sniff the message.  This
-        # mirrors what the Prosody admin shell prints:
-        # ``error: That user already exists``.  Anything else is a
-        # 502 (prosody / config problem on our side).
+        # errors via exit code, so we sniff the message.  Prosody
+        # 13's mod_admin_shell prints ``Error: User exists`` (verified
+        # against a live Prosody on andrew-1); older versions / forks
+        # have used ``error: That user already exists``.  Match
+        # either to keep this robust across upgrades.  Anything else
+        # is a 502 (prosody / config problem on our side).
         msg = str(exc).lower()
-        if "already exists" in msg:
+        if "user exists" in msg or "already exists" in msg:
             raise HTTPException(409, f"user {jid} already exists")
         logger.error("create user %s via prosodyctl: %s", jid, exc)
         raise HTTPException(502, f"prosodyctl: {exc}")
@@ -779,7 +781,14 @@ async def delete_user_api(request: Request) -> Response:
         )
     except ProsodyctlError as exc:
         msg = str(exc).lower()
-        if "not found" in msg or "no such user" in msg:
+        # Prosody 13's admin shell prints ``Error: No such user``
+        # for delete-of-missing; older forks have used ``user not
+        # found`` and ``user does not exist``.  Match all three.
+        if (
+            "not found" in msg
+            or "no such user" in msg
+            or "does not exist" in msg
+        ):
             raise HTTPException(404, f"user {jid} not found")
         logger.error("delete user %s via prosodyctl: %s", jid, exc)
         raise HTTPException(502, f"prosodyctl: {exc}")
@@ -798,7 +807,11 @@ async def reset_password_api(request: Request) -> JSONResponse:
         )
     except ProsodyctlError as exc:
         msg = str(exc).lower()
-        if "not found" in msg or "no such user" in msg:
+        if (
+            "not found" in msg
+            or "no such user" in msg
+            or "does not exist" in msg
+        ):
             raise HTTPException(404, f"user {jid} not found")
         logger.error("reset password for %s via prosodyctl: %s", jid, exc)
         raise HTTPException(502, f"prosodyctl: {exc}")
