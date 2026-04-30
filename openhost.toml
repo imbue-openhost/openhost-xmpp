@@ -6,11 +6,16 @@ authors = ["Andrew Laack <andrew@laack.co>"]
 
 [runtime.container]
 image = "Dockerfile"
-# The OpenHost router proxies HTTP to this port.  Nothing interesting
-# serves here — it's a tiny sidecar exposing /healthz and a landing
-# page explaining the client-connect URIs.  The actual XMPP protocol
-# lives on the [[ports]] below, which OpenHost publishes on the host
-# directly (bypassing the router).
+# The OpenHost router proxies HTTP to this port.  The sidecar
+# exposes:
+#   * /healthz (router liveness probe)
+#   * /              (public landing page describing the
+#                     XMPP-client connect URIs)
+#   * /users         (owner-only user-management page)
+#   * /api/users[/…] (owner-only user CRUD JSON API used by the
+#                     management page's JS)
+# The actual XMPP protocol lives on the [[ports]] below, which
+# OpenHost publishes on the host directly (bypassing the router).
 port = 8080
 
 # XMPP client-to-server, STARTTLS upgrade path.  Modern clients
@@ -74,11 +79,21 @@ memory_mb = 256
 cpu_millicores = 250
 
 [routing]
-# The HTTP sidecar exposes two paths.  Both are publicly readable
-# because:
-#   * /healthz is used by the router for liveness probes.
-#   * / is a static landing page with only the zone hostname and
-#     client-URI instructions — no credentials, no control plane.
+# OpenHost's public_paths matcher treats each entry as a prefix:
+# ``"/"`` matches every URL on the app.  Listing a more specific
+# subset wouldn't help because there's no entry that means "just
+# the bare slash".  We need the landing page (/) and the health
+# check (/healthz) reachable without an OpenHost session, AND a
+# private management surface (/users + /api/users[/...]) that's
+# reachable only to the compute-space owner.
+#
+# The split is enforced INSIDE the sidecar: every owner-only route
+# checks the ``X-OpenHost-Is-Owner: true`` header that OpenHost
+# forwards on authenticated-owner requests, and rejects everything
+# else (with a 302 to /login for HTML clients, 401 for API
+# clients).  See ``sidecar/server.py``'s ``_owner_only`` helper —
+# this mirrors the pattern openhost-gemini uses for its editor.
+#
 # The XMPP protocol itself has its own authentication and lives on
 # the [[ports]] above, NOT behind the OpenHost router.
 public_paths = ["/"]

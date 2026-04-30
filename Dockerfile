@@ -20,7 +20,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 #     provides TLS bindings; Prosody 13 uses LuaSec for its TLS stack,
 #     not the alternative luaossl binding)
 #   * openssl for the self-signed cert bootstrap in start.sh
-#   * python3 for the tiny HTTP status sidecar
+#   * python3 + python3-venv for the Starlette HTTP sidecar (status,
+#     landing page, and the owner-only user-management UI)
 #   * tini so SIGTERM from Docker cleanly propagates to our supervisor
 #     shell and both children
 #   * curl/wget/ca-certs/lsb-release for downloading the apt sources
@@ -33,7 +34,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg lsb-release wget \
-        openssl python3 tini sqlite3 \
+        openssl python3 python3-venv tini sqlite3 \
  && wget -qO /etc/apt/sources.list.d/prosody.sources \
         https://prosody.im/downloads/repos/bookworm/prosody.sources \
  && apt-get update \
@@ -47,11 +48,24 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/*.bin
 
-# Our wrapper bits.
+# --- Python sidecar venv --------------------------------------------
+#
+# Starlette + uvicorn aren't available as Debian-bookworm
+# ``python3-*`` packages at the versions we need (Starlette 0.39+ for
+# the modern type signatures used in server.py).  We install them
+# into a dedicated venv at /opt/sidecar-venv so they're isolated
+# from the system Python and the Prosody-managed Lua stack.
+COPY sidecar/requirements.txt /tmp/sidecar-requirements.txt
+RUN python3 -m venv /opt/sidecar-venv \
+ && /opt/sidecar-venv/bin/pip install --no-cache-dir --disable-pip-version-check \
+        -r /tmp/sidecar-requirements.txt \
+ && rm -f /tmp/sidecar-requirements.txt
+
+# --- Our own bits ----------------------------------------------------
 COPY start.sh /usr/local/bin/start.sh
-COPY status_server.py /usr/local/bin/status_server.py
+COPY sidecar/ /usr/local/share/openhost-xmpp/sidecar/
 COPY prosody.cfg.lua.template /usr/local/share/openhost-xmpp/prosody.cfg.lua.template
-RUN chmod +x /usr/local/bin/start.sh /usr/local/bin/status_server.py
+RUN chmod +x /usr/local/bin/start.sh
 
 # Document the ports we bind.  Does NOT publish them — that's
 # OpenHost's job, via ``[[ports]]`` in ``openhost.toml``.

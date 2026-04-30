@@ -49,14 +49,32 @@ The container logs record only the file path, not the password itself, so `oh ap
 
 ### 3. Create user accounts
 
-Because in-band registration is off, you create users with `prosodyctl`:
+In-band registration is off, so accounts are provisioned by the
+zone owner. Visit the app's web page while signed in to OpenHost as
+the compute-space owner:
 
-```bash
-oh app exec xmpp prosodyctl adduser alice@xmpp.<zone>
-oh app exec xmpp prosodyctl adduser bob@xmpp.<zone>
+```
+https://xmpp.<zone>/
 ```
 
-`prosodyctl` prompts for a password interactively.
+You'll see a "You're signed in as the owner" card with a **Manage
+users** button. The page it links to (`/users`) lists every account
+on the XMPP domain and lets you create, delete, and reset the
+password of users from a small form. Anonymous visitors who hit the
+landing page never see those affordances — same pattern as the
+Gemini app's editor.
+
+Notes:
+
+- The bootstrap `admin@<xmpp-domain>` account is protected from
+  deletion through the UI; rotate its password instead. (Deleting
+  it would lock the operator out of `prosodyctl shell`, which is
+  what the management UI uses behind the scenes.)
+- If you'd rather mint accounts on the command line, you can still
+  shell into the container (e.g. via the dashboard's container
+  console once OpenHost ships one) and run `prosodyctl shell user
+  create <jid> <password>` directly. The web UI calls the same
+  underlying admin shell.
 
 ### 4. Point a client at the server
 
@@ -105,10 +123,11 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 
 ## Files
 
-- `Dockerfile` — Debian 12 + Prosody 13 from upstream prosody.im + openssl + python3 for the status sidecar + tini for clean signal handling.
+- `Dockerfile` — Debian 12 + Prosody 13 from upstream prosody.im + openssl + python3 venv (Starlette + uvicorn) for the HTTP sidecar + tini for clean signal handling.
 - `start.sh` — renders the config template, bootstraps self-signed certs and the admin account, supervises prosody + sidecar.
 - `prosody.cfg.lua.template` — the Prosody config. Rendered on every boot with the zone hostname injected.
-- `status_server.py` — tiny HTTP sidecar serving `/healthz` and a landing page on port 8080.
+- `sidecar/server.py` — Starlette app exposing `/healthz`, the public landing page, the owner-only `/users` management page, and the small `/api/users` JSON API. Owner gating is done inside the sidecar by checking the `X-OpenHost-Is-Owner` header that OpenHost forwards on owner-authenticated requests; the app declares `public_paths = ["/"]` so the landing page works without a session.
+- `sidecar/requirements.txt` — Python deps installed into a dedicated venv at `/opt/sidecar-venv` during image build.
 - `openhost.toml` — OpenHost manifest declaring the XMPP ports and requesting `app_data` storage.
 
 ## Data layout
