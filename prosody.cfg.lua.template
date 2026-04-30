@@ -92,7 +92,28 @@ modules_enabled = {
 
     -- Administration
     "admin_adhoc";    -- XEP-0133 ad-hoc service administration commands
+    "admin_shell";    -- mod_admin_shell: prosodyctl admin-shell over a
+                      -- UNIX socket inside the container.  Used by the
+                      -- HTTP sidecar (sidecar/server.py) to manage
+                      -- accounts via ``prosodyctl shell user
+                      -- create/delete/password/list``.  The socket
+                      -- path is set via ``admin_socket`` below; only
+                      -- processes inside this container can reach it,
+                      -- and the container is single-tenant under
+                      -- OpenHost's data model.
 }
+
+-- mod_admin_shell socket path.  We point it at the data dir because:
+--   1. The default ``/var/run/prosody/prosody.sock`` is created by
+--      the Debian package's systemd unit, not by a foreground
+--      ``prosody -F`` invocation; we run prosody in the foreground
+--      so that path may not exist or be writable.
+--   2. The data dir is the one place we always have write access
+--      under the ``prosody`` user (start.sh chowns it).
+-- The sidecar uses the same path implicitly via ``prosodyctl
+-- --config <CONFIG>`` (prosodyctl reads ``admin_socket`` from the
+-- same config file).
+admin_socket = "@@DATA_DIR@@/admin.sock"
 
 -- Rate limits.  Prosody applies these per-connection; keep them generous
 -- for real clients on lossy mobile networks while still braking bots.
