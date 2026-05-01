@@ -197,6 +197,16 @@ VirtualHost "@@DOMAIN@@"
 
 Component "conference.@@DOMAIN@@" "muc"
     name = "Chat rooms"
+    -- Grant the bootstrap ``admin@<xmpp-domain>`` account
+    -- component-level admin rights on this MUC service.  In
+    -- Prosody's role model, server-wide admins (top-level
+    -- ``admins = { … }`` above) are NOT automatically MUC-room
+    -- admins; we have to explicitly list them on the component.
+    -- This lets the operator destroy / reconfigure rooms whose
+    -- original creator left or whose ownership got stranded —
+    -- e.g. the general chat-room — via ``prosodyctl shell muc:…``
+    -- or any XMPP client logged in as admin@.
+    admins = { "@@ADMIN_JID@@" }
     modules_enabled = {
         "muc_mam";             -- XEP-0313 archive for group chats
     }
