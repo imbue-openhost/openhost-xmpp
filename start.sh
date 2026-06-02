@@ -68,6 +68,7 @@ resolve_domain() {
 }
 
 DOMAIN="$(resolve_domain)"
+export XMPP_DOMAIN="$DOMAIN"
 ADMIN_JID="admin@${DOMAIN}"
 CONFIG_FILE="$DATA_DIR/prosody.cfg.lua"
 CERT_FILE="$DATA_DIR/certs/${DOMAIN}.crt"

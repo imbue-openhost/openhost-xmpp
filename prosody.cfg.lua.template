@@ -134,6 +134,14 @@ http_external_url = "https://@@DOMAIN@@:5281/"
 https_certificate = "@@DATA_DIR@@/certs/@@DOMAIN@@.crt"
 https_key         = "@@DATA_DIR@@/certs/@@DOMAIN@@.key"
 
+-- CORS: the admin panel loads from the OpenHost-routed domain (port
+-- 443 via Caddy) while BOSH/WebSocket live on port 5281.  Without
+-- cross-origin headers the browser blocks the connection.
+cross_domain_bosh = true
+cross_domain_websocket = true
+consider_bosh_secure = true
+consider_websocket_secure = true
+
 -- Logging: stdout only so `oh app logs xmpp` sees it.  Prosody's default
 -- is a per-level file list; override with a single sink to the void.
 log = {
