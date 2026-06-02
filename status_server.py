@@ -249,9 +249,32 @@ def _create_account(username: str, domain: str, password: str) -> Tuple[bool, st
 
 
 def _delete_account(username: str, domain: str) -> Tuple[bool, str]:
-    """Delete an XMPP account via prosodyctl deluser."""
+    """Delete an XMPP account via prosodyctl deluser.
+
+    Falls back to direct SQLite deletion if prosodyctl fails (e.g.
+    when the admin shell socket is not yet available).
+    """
     jid = f"{username}@{domain}"
-    return _run_prosodyctl("deluser", jid)
+    ok, output = _run_prosodyctl("deluser", jid)
+    if ok:
+        return True, output
+
+    # Fallback: delete directly from the SQLite DB.
+    log.info("prosodyctl deluser failed, trying direct DB deletion: %s", output)
+    if not os.path.isfile(DB_PATH):
+        return False, "Database file not found"
+    try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
+            cur = conn.execute(
+                "DELETE FROM prosody WHERE user=? AND host=?",
+                (username, domain),
+            )
+            if cur.rowcount == 0:
+                return False, f"Account {username} not found"
+            conn.commit()
+        return True, f"Deleted {username} via direct DB removal"
+    except sqlite3.Error as exc:
+        return False, f"DB deletion failed: {exc}"
 
 
 def _change_password(

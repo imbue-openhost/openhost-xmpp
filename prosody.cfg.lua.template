@@ -92,6 +92,7 @@ modules_enabled = {
 
     -- Administration
     "admin_adhoc";    -- XEP-0133 ad-hoc service administration commands
+    "admin_shell";    -- CLI admin socket for prosodyctl operations at runtime
 }
 
 -- Rate limits.  Prosody applies these per-connection; keep them generous
