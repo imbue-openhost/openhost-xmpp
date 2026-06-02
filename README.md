@@ -7,7 +7,7 @@ Prosody XMPP server packaged as an OpenHost app.
 - **HTTP file sharing** on `share.<xmpp-domain>` (XEP-0363) with a 100 MiB per-file cap, 500 MiB per-user-per-day rolling quota, and a 30-day expiry on each uploaded file.
 - **Mobile push notifications** (XEP-0357) so Conversations / Monal get notified even when the app isn't running.
 - **Self-signed TLS** on first boot — works with modern clients that use XEP-0368 direct-TLS on port 5223. Federation to other servers will fail until you drop in a real certificate (see below).
-- **Registration closed by default**. You provision accounts by hand.
+- **Registration closed by default**. The owner manages accounts through the web admin panel or via `prosodyctl`.
 
 Throughout this README, `<xmpp-domain>` means the full host where the server runs — by default `<app-name>.<zone-domain>`, e.g. `xmpp.andrew.host.imbue.com`. It is **not** the bare zone domain.
 
@@ -49,25 +49,26 @@ The container logs record only the file path, not the password itself, so `oh ap
 
 ### 3. Create user accounts
 
-Because in-band registration is off, you create users with `prosodyctl`:
+Open the app in a browser as the OpenHost owner. The admin panel shows an **Accounts** tab where you can create, delete, and change passwords for XMPP accounts directly from the web UI. No CLI access needed.
+
+You can also create accounts from the command line if you prefer:
 
 ```bash
 oh app exec xmpp prosodyctl adduser alice@xmpp.<zone>
-oh app exec xmpp prosodyctl adduser bob@xmpp.<zone>
 ```
 
-`prosodyctl` prompts for a password interactively.
+### 4. Send messages
 
-### 4. Point a client at the server
+The admin panel includes a **Chat** tab with an embedded [Converse.js](https://conversejs.org/) web client. Log in with any account's JID and password to start messaging from the browser. The web client connects to Prosody via WebSocket on port 5281.
 
-Any modern XMPP client works. Recommended:
+You can also use any standalone XMPP client. Recommended:
 
 - [Conversations](https://conversations.im/) (Android)
 - [Dino](https://dino.im/) (Linux)
 - [Gajim](https://gajim.org/) (Windows/Linux/macOS)
 - [Monal](https://monal-im.org/) (iOS/macOS)
 
-Enter a JID (`alice@xmpp.<zone>`), the password you set, and tell the client to connect. Self-signed cert → accept it once; your client caches the pinning and future connects are silent.
+Enter a JID (`alice@xmpp.<zone>`), the password you set, and tell the client to connect. Self-signed cert: accept it once; your client caches the pinning and future connects are silent.
 
 ## Real TLS certificates
 
@@ -108,7 +109,7 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 - `Dockerfile` — Debian 12 + Prosody 13 from upstream prosody.im + openssl + python3 for the status sidecar + tini for clean signal handling.
 - `start.sh` — renders the config template, bootstraps self-signed certs and the admin account, supervises prosody + sidecar.
 - `prosody.cfg.lua.template` — the Prosody config. Rendered on every boot with the zone hostname injected.
-- `status_server.py` — tiny HTTP sidecar serving `/healthz` and a landing page on port 8080.
+- `status_server.py` — HTTP sidecar on port 8080: serves the admin panel (account management + embedded Converse.js chat) for the OpenHost owner, a public landing page for everyone else, and `/healthz` for the router health check.
 - `openhost.toml` — OpenHost manifest declaring the XMPP ports and requesting `app_data` storage.
 
 ## Data layout

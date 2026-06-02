@@ -192,10 +192,14 @@ def _validate_password(password: str) -> Optional[str]:
     return None
 
 
-def _list_accounts(domain: str) -> list[str]:
-    """Query the Prosody SQLite DB for account usernames."""
+def _list_accounts(domain: str) -> Tuple[list[str], Optional[str]]:
+    """Query the Prosody SQLite DB for account usernames.
+
+    Returns (accounts, error).  On success error is None; on failure
+    accounts is empty and error describes what went wrong.
+    """
     if not os.path.isfile(DB_PATH):
-        return []
+        return [], None  # DB not created yet, no accounts
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
         try:
@@ -204,12 +208,12 @@ def _list_accounts(domain: str) -> list[str]:
                 "WHERE host=? AND store='accounts' ORDER BY user",
                 (domain,),
             )
-            return [row[0] for row in cur.fetchall()]
+            return [row[0] for row in cur.fetchall()], None
         finally:
             conn.close()
     except sqlite3.Error as exc:
         log.error("SQLite error listing accounts: %s", exc)
-        return []
+        return [], f"Database error: {exc}"
 
 
 def _run_prosodyctl(*args: str) -> Tuple[bool, str]:
@@ -553,7 +557,7 @@ _ADMIN_HTML = """\
 
 <script>
   // ---- Configuration ----
-  const XMPP_DOMAIN = window.location.hostname;
+  const XMPP_DOMAIN = '@@XMPP_DOMAIN@@';
   document.getElementById('domainLabel').textContent = XMPP_DOMAIN;
 
   // ---- Tab switching ----
@@ -597,13 +601,34 @@ _ADMIN_HTML = """\
         accounts.forEach(user => {
           const tr = document.createElement('tr');
           const jid = user + '@' + XMPP_DOMAIN;
-          tr.innerHTML =
-            '<td>' + escHtml(user) + '</td>' +
-            '<td><code>' + escHtml(jid) + '</code></td>' +
-            '<td class="actions">' +
-              '<button class="btn-secondary btn-sm" onclick="openPwModal(\'' + escAttr(user) + '\')">Password</button>' +
-              '<button class="btn-danger btn-sm" onclick="deleteAccount(\'' + escAttr(user) + '\')">Delete</button>' +
-            '</td>';
+
+          const tdUser = document.createElement('td');
+          tdUser.textContent = user;
+
+          const tdJid = document.createElement('td');
+          const code = document.createElement('code');
+          code.textContent = jid;
+          tdJid.appendChild(code);
+
+          const tdActions = document.createElement('td');
+          tdActions.className = 'actions';
+
+          const pwBtn = document.createElement('button');
+          pwBtn.className = 'btn-secondary btn-sm';
+          pwBtn.textContent = 'Password';
+          pwBtn.addEventListener('click', () => openPwModal(user));
+
+          const delBtn = document.createElement('button');
+          delBtn.className = 'btn-danger btn-sm';
+          delBtn.textContent = 'Delete';
+          delBtn.addEventListener('click', () => deleteAccount(user));
+
+          tdActions.appendChild(pwBtn);
+          tdActions.appendChild(delBtn);
+
+          tr.appendChild(tdUser);
+          tr.appendChild(tdJid);
+          tr.appendChild(tdActions);
           tbody.appendChild(tr);
         });
         document.getElementById('accountsTable').style.display = 'table';
@@ -619,9 +644,6 @@ _ADMIN_HTML = """\
     const d = document.createElement('div');
     d.appendChild(document.createTextNode(s));
     return d.innerHTML;
-  }
-  function escAttr(s) {
-    return s.replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
   }
 
   document.getElementById('createForm').addEventListener('submit', async (e) => {
@@ -811,6 +833,7 @@ class Handler(BaseHTTPRequestHandler):
             body = (
                 _ADMIN_HTML.replace("@@STATUS_CLASS@@", status_class)
                 .replace("@@STATUS_TEXT@@", status_text)
+                .replace("@@XMPP_DOMAIN@@", html.escape(domain, quote=True))
             ).encode("utf-8")
         else:
             body = (
@@ -825,8 +848,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self._require_owner():
             return
         domain = get_domain(self.headers)
-        accounts = _list_accounts(domain)
-        self._respond_json(200, {"accounts": accounts})
+        accounts, err = _list_accounts(domain)
+        if err:
+            self._respond_json(500, {"error": err, "accounts": []})
+        else:
+            self._respond_json(200, {"accounts": accounts})
 
     def _handle_create_account(self) -> None:
         if not self._require_owner():
