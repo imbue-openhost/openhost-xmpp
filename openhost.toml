@@ -74,13 +74,12 @@ memory_mb = 256
 cpu_millicores = 250
 
 [routing]
-# The HTTP sidecar exposes two paths.  Both are publicly readable
-# because:
-#   * /healthz is used by the router for liveness probes.
-#   * / is a static landing page with only the zone hostname and
-#     client-URI instructions — no credentials, no control plane.
-# The XMPP protocol itself has its own authentication and lives on
-# the [[ports]] above, NOT behind the OpenHost router.
+# Both /healthz and / are publicly readable.  /healthz is the router's
+# liveness probe.  / serves a connect-instructions page for non-owners
+# and an admin panel (account management + chat) for the zone owner
+# (detected via X-OpenHost-Is-Owner header).  The admin API endpoints
+# under /api/ return 403 for non-owners.  The XMPP protocol itself
+# lives on the [[ports]] above, NOT behind the OpenHost router.
 public_paths = ["/"]
 
 [data]

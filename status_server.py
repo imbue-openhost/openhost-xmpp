@@ -201,16 +201,13 @@ def _list_accounts(domain: str) -> Tuple[list[str], Optional[str]]:
     if not os.path.isfile(DB_PATH):
         return [], None  # DB not created yet, no accounts
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=5)
-        try:
+        with sqlite3.connect(DB_PATH, timeout=5) as conn:
             cur = conn.execute(
                 "SELECT DISTINCT user FROM prosody "
                 "WHERE host=? AND store='accounts' ORDER BY user",
                 (domain,),
             )
             return [row[0] for row in cur.fetchall()], None
-        finally:
-            conn.close()
     except sqlite3.Error as exc:
         log.error("SQLite error listing accounts: %s", exc)
         return [], f"Database error: {exc}"
@@ -830,10 +827,15 @@ class Handler(BaseHTTPRequestHandler):
         safe_host = html.escape(domain, quote=True)
 
         if _is_owner(self.headers):
+            # The domain goes into a JavaScript string literal, so
+            # JSON-encode it (which handles any special chars properly)
+            # then strip the surrounding quotes since the template
+            # already has its own quotes around @@XMPP_DOMAIN@@.
+            js_safe_domain = json.dumps(domain)[1:-1]
             body = (
                 _ADMIN_HTML.replace("@@STATUS_CLASS@@", status_class)
                 .replace("@@STATUS_TEXT@@", status_text)
-                .replace("@@XMPP_DOMAIN@@", html.escape(domain, quote=True))
+                .replace("@@XMPP_DOMAIN@@", js_safe_domain)
             ).encode("utf-8")
         else:
             body = (
