@@ -251,16 +251,20 @@ def _create_account(username: str, domain: str, password: str) -> Tuple[bool, st
 def _delete_account(username: str, domain: str) -> Tuple[bool, str]:
     """Delete an XMPP account via prosodyctl deluser.
 
-    Falls back to direct SQLite deletion if prosodyctl fails (e.g.
-    when the admin shell socket is not yet available).
+    Falls back to direct SQLite deletion if prosodyctl fails or if
+    its output contains error indicators (prosodyctl sometimes exits
+    0 even when the admin shell socket is unavailable).
     """
     jid = f"{username}@{domain}"
     ok, output = _run_prosodyctl("deluser", jid)
-    if ok:
+
+    # prosodyctl deluser can exit 0 while printing an error about
+    # the admin shell socket.  Detect this and fall through.
+    if ok and "unable to connect" not in output.lower() and "error" not in output.lower():
         return True, output
 
     # Fallback: delete directly from the SQLite DB.
-    log.info("prosodyctl deluser failed, trying direct DB deletion: %s", output)
+    log.info("prosodyctl deluser unsuccessful, trying direct DB deletion: %s", output)
     if not os.path.isfile(DB_PATH):
         return False, "Database file not found"
     try:
