@@ -87,3 +87,15 @@ public_paths = ["/"]
 # Persistent: SQLite DB with user accounts, roster, MAM archive, PEP
 # pubsub data; admin password stash; TLS cert/key pair.
 app_data = true
+
+[tls]
+# Request the platform's wildcard TLS certificate to be bind-mounted into
+# the container at /run/secrets/tls/tls.crt (cert) and
+# /run/secrets/tls/tls.key (private key).  The platform env vars
+# OPENHOST_TLS_CERT_PATH and OPENHOST_TLS_KEY_PATH are also injected
+# pointing at those paths.
+#
+# When available, start.sh uses these in preference to the self-signed cert,
+# enabling verified TLS for both client connections and s2s federation without
+# any operator action beyond the standard OpenHost TLS setup.
+cert = true

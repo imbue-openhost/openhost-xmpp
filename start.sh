@@ -74,6 +74,21 @@ CERT_FILE="$DATA_DIR/certs/${DOMAIN}.crt"
 KEY_FILE="$DATA_DIR/certs/${DOMAIN}.key"
 ADMIN_PASSWORD_FILE="$DATA_DIR/admin_password.txt"
 
+# Platform-provided TLS cert paths (injected by OpenHost when [tls] cert = true).
+# When present and the files exist, we symlink the platform's wildcard cert into
+# the certs directory so Prosody picks it up automatically.  The platform cert
+# covers <zone_domain> and *.<zone_domain>, so it is valid for the XMPP domain
+# (<app_name>.<zone_domain>) without any extra ACME work.  Using a symlink
+# (rather than copying) means the cert is always current — when OpenHost renews
+# the wildcard cert the symlink still points at the new file.
+#
+# If the platform cert is not available (TLS not configured, cert not yet
+# acquired, or running on a platform version that doesn't support cert sharing)
+# we fall through to the existing self-signed cert generation so the container
+# always starts.
+PLATFORM_CERT="${OPENHOST_TLS_CERT_PATH:-}"
+PLATFORM_KEY="${OPENHOST_TLS_KEY_PATH:-}"
+
 log "DOMAIN=$DOMAIN"
 log "DATA_DIR=$DATA_DIR"
 
@@ -242,7 +257,51 @@ EOF
     chown root:prosody "$CERT_FILE" "$KEY_FILE" 2>/dev/null || true
 }
 
-if [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
+# --- cert selection: platform cert > existing cert > fresh self-signed ------
+#
+# Priority order:
+#  1. Platform wildcard cert (OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH).
+#     Valid for *.<zone_domain>, so it covers the XMPP domain.  We symlink it
+#     into the certs dir so Prosody finds it at the expected path.
+#  2. Existing cert/key already on disk (from a previous boot).
+#  3. Fresh self-signed cert (first boot without platform cert).
+use_platform_cert() {
+    # Validate the platform cert vars are set and point at readable files.
+    if [[ -z "$PLATFORM_CERT" || -z "$PLATFORM_KEY" ]]; then
+        return 1
+    fi
+    if [[ ! -r "$PLATFORM_CERT" ]]; then
+        log "warning: OPENHOST_TLS_CERT_PATH=$PLATFORM_CERT is not readable; falling back to self-signed"
+        return 1
+    fi
+    if [[ ! -r "$PLATFORM_KEY" ]]; then
+        log "warning: OPENHOST_TLS_KEY_PATH=$PLATFORM_KEY is not readable; falling back to self-signed"
+        return 1
+    fi
+    # Replace any existing symlink or plain file with a fresh symlink.
+    # Use a temp name for the symlink and then atomically rename it so
+    # a SIGKILL mid-operation doesn't leave a dangling symlink.
+    local tmp_cert="${CERT_FILE}.symlnk"
+    local tmp_key="${KEY_FILE}.symlnk"
+    if ! ln -sf "$PLATFORM_CERT" "$tmp_cert"; then
+        log "warning: could not create symlink for platform cert; falling back to self-signed"
+        rm -f "$tmp_cert" 2>/dev/null || true
+        return 1
+    fi
+    if ! ln -sf "$PLATFORM_KEY" "$tmp_key"; then
+        log "warning: could not create symlink for platform key; falling back to self-signed"
+        rm -f "$tmp_cert" "$tmp_key" 2>/dev/null || true
+        return 1
+    fi
+    mv "$tmp_cert" "$CERT_FILE"
+    mv "$tmp_key" "$KEY_FILE"
+    log "using platform TLS cert: $PLATFORM_CERT -> $CERT_FILE"
+    return 0
+}
+
+if use_platform_cert; then
+    : # platform cert already symlinked into place above
+elif [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
     log "generating self-signed TLS cert for $DOMAIN (+ conference., share.)"
     if ! generate_self_signed_cert; then
         log "FATAL: self-signed cert bootstrap failed"
