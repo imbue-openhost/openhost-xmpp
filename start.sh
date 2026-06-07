@@ -12,16 +12,19 @@
 #   2. Render ``prosody.cfg.lua`` from the bundled template with that
 #      domain baked in.  (Re-rendering every boot means template
 #      updates in new image versions take effect automatically.)
+#   3. Symlink the platform's wildcard TLS cert (provided via
+#      OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH) into the Prosody
+#      certs directory.  The container exits immediately if these env vars
+#      are missing or the files are unreadable — there is no self-signed
+#      fallback, since a self-signed cert breaks s2s federation.
 # On first boot only we also:
-#   3. Generate a self-signed TLS cert/key pair (``<domain>.crt`` and
-#      ``<domain>.key``) under ``$OPENHOST_APP_DATA_DIR/certs/``.
 #   4. Create an ``admin@<domain>`` Prosody account with a random
 #      password and write the password to
 #      ``$OPENHOST_APP_DATA_DIR/admin_password.txt`` (chmod 644 so
 #      the zone owner can read it via the file-browser app — see the
 #      comment on ``create_admin_account`` for the rootless-podman
 #      reasoning).
-# The cert, key, SQLite account DB, and password file all persist
+# The symlinked cert, SQLite account DB, and password file all persist
 # across restarts.
 #
 # Then we:
@@ -75,17 +78,12 @@ KEY_FILE="$DATA_DIR/certs/${DOMAIN}.key"
 ADMIN_PASSWORD_FILE="$DATA_DIR/admin_password.txt"
 
 # Platform-provided TLS cert paths (injected by OpenHost when [tls] cert = true).
-# When present and the files exist, we symlink the platform's wildcard cert into
-# the certs directory so Prosody picks it up automatically.  The platform cert
-# covers <zone_domain> and *.<zone_domain>, so it is valid for the XMPP domain
-# (<app_name>.<zone_domain>) without any extra ACME work.  Using a symlink
-# (rather than copying) means the cert is always current — when OpenHost renews
-# the wildcard cert the symlink still points at the new file.
-#
-# If the platform cert is not available (TLS not configured, cert not yet
-# acquired, or running on a platform version that doesn't support cert sharing)
-# we fall through to the existing self-signed cert generation so the container
-# always starts.
+# The platform cert covers <zone_domain> and *.<zone_domain>, so it is valid
+# for the XMPP domain (<app_name>.<zone_domain>) without any extra ACME work.
+# These vars are guaranteed to be set by the OpenHost runtime when [tls] cert
+# = true is declared in openhost.toml — if they are absent the container
+# exits with a clear error rather than silently falling back to a self-signed
+# cert that would break s2s federation.
 PLATFORM_CERT="${OPENHOST_TLS_CERT_PATH:-}"
 PLATFORM_KEY="${OPENHOST_TLS_KEY_PATH:-}"
 
@@ -149,167 +147,52 @@ render_config() {
 render_config
 log "rendered $CONFIG_FILE"
 
-# --- self-signed TLS cert bootstrap ----------------------------------
+# --- platform TLS cert -------------------------------------------------------
 #
-# Prosody won't start without a cert for the configured vhost.  We
-# generate an RSA 2048 self-signed cert on first boot with SAN
-# entries for the XMPP domain, conference.<xmpp-domain>, and
-# share.<xmpp-domain> so the MUC and http-file-share components
-# share the same cert.  (RSA over ECDSA because a handful of older
-# mobile XMPP clients still choke on ECDSA certs; the perf
-# difference is negligible for personal-scale XMPP.)  The operator
-# can overwrite ``<xmpp-domain>.crt`` / ``<xmpp-domain>.key`` with
-# real certificates (Let's Encrypt etc.) and restart the container
-# to pick them up — the filenames stay the same so the config keeps
-# working.  We don't use ``prosodyctl reload`` because Prosody here
-# runs in the foreground without a pidfile, so prosodyctl has no
-# way to locate the running process.
-generate_self_signed_cert() {
-    # Cleanup strategy: bash's ``trap ... RETURN`` and ``trap ...
-    # ERR`` both persist globally past the function's return and
-    # would reference now-stale local variables on later function
-    # calls.  Instead we do explicit cleanup at each exit path via
-    # ``if !`` guards below.
-    local cnf
-    if ! cnf=$(mktemp 2>/dev/null) || [[ -z "$cnf" ]]; then
-        log "ERROR: mktemp failed"
-        return 1
-    fi
-    # Local helper.  Note: bash "defines" it into the global
-    # function namespace on first call, and its body references
-    # ``$cnf`` which is a local of ``generate_self_signed_cert`` —
-    # so the helper is only meaningful while we're inside the
-    # enclosing function.  That's fine here: every call site is
-    # below, inside this function, and the helper's distinctive
-    # name (``_sscert_cleanup``) avoids any plausible collision.
-    _sscert_cleanup() {
-        rm -f "$cnf" "$KEY_FILE.partial" "$CERT_FILE.partial" \
-              "$KEY_FILE.orphan" "$CERT_FILE.orphan" 2>/dev/null || true
-    }
-
-    # Heredoc writes the openssl config to the tempfile.  Check the
-    # exit status explicitly because ``set -e`` is suppressed inside
-    # our ``if !`` caller context (bash quirk); a silent disk-full
-    # here would otherwise feed openssl an empty config file.
-    if ! cat > "$cnf" <<EOF
-[req]
-default_bits = 2048
-distinguished_name = dn
-req_extensions = v3_req
-prompt = no
-[dn]
-CN = ${DOMAIN}
-O = OpenHost XMPP
-[v3_req]
-subjectAltName = @alt_names
-keyUsage = critical, digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-[alt_names]
-DNS.1 = ${DOMAIN}
-DNS.2 = conference.${DOMAIN}
-DNS.3 = share.${DOMAIN}
-EOF
-    then
-        log "ERROR: writing openssl config to $cnf failed"
-        _sscert_cleanup
-        return 1
-    fi
-    # Write to ``.partial`` first so a crash mid-write doesn't leave
-    # a half-written file that the boot-time guard mistakes for a
-    # usable cert.  Leave openssl's stderr visible so a failure
-    # (bad config, entropy starvation, permission error) surfaces in
-    # the container log rather than the script dying with no trace.
-    if ! openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$KEY_FILE.partial" -out "$CERT_FILE.partial" \
-            -days 825 -config "$cnf" -extensions v3_req \
-            >/dev/null; then
-        log "ERROR: openssl cert generation failed"
-        _sscert_cleanup
-        return 1
-    fi
-    # Atomic rename.  If either ``mv`` fails (permission on
-    # $DATA_DIR, say), clean up so the next boot's guard isn't
-    # confused by half-a-pair.  If the key rename succeeds but the
-    # cert rename fails, we'd end up with a real-path key with no
-    # matching cert; rename-back the key to ``.orphan`` so the
-    # cleanup can remove it too.
-    if ! mv "$KEY_FILE.partial" "$KEY_FILE"; then
-        log "ERROR: unable to move key into place"
-        _sscert_cleanup
-        return 1
-    fi
-    if ! mv "$CERT_FILE.partial" "$CERT_FILE"; then
-        log "ERROR: unable to move cert into place (rolling back key)"
-        mv "$KEY_FILE" "$KEY_FILE.orphan" 2>/dev/null || true
-        _sscert_cleanup
-        return 1
-    fi
-    _sscert_cleanup
-    chmod 640 "$CERT_FILE" "$KEY_FILE"
-    # Ownership: we'd prefer root:prosody so the prosody user can
-    # read but not overwrite its own private key.  In practice the
-    # ``chown -R prosody:prosody "$DATA_DIR"`` below will flatten
-    # this anyway under rootless podman (where the "root" user
-    # inside the container maps to an unprivileged host uid).  We
-    # leave the attempt in so on a Docker deployment where it
-    # sticks, the private key stays protected from Prosody's own
-    # process.
-    chown root:prosody "$CERT_FILE" "$KEY_FILE" 2>/dev/null || true
-}
-
-# --- cert selection: platform cert > existing cert > fresh self-signed ------
+# OpenHost injects OPENHOST_TLS_CERT_PATH and OPENHOST_TLS_KEY_PATH when
+# [tls] cert = true is set in openhost.toml.  The platform enforces that the
+# cert files exist before the container starts, so if these vars are absent or
+# the files are unreadable here it indicates a misconfiguration — we exit
+# immediately with a clear diagnostic rather than silently falling back to a
+# self-signed cert that would break s2s federation.
 #
-# Priority order:
-#  1. Platform wildcard cert (OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH).
-#     Valid for *.<zone_domain>, so it covers the XMPP domain.  We symlink it
-#     into the certs dir so Prosody finds it at the expected path.
-#  2. Existing cert/key already on disk (from a previous boot).
-#  3. Fresh self-signed cert (first boot without platform cert).
-use_platform_cert() {
-    # Validate the platform cert vars are set and point at readable files.
+# On every boot we symlink the platform cert into the Prosody certs directory
+# so Prosody finds it at the expected path.  A symlink (not a copy) means the
+# cert is always current: when OpenHost renews the wildcard cert the symlink
+# keeps pointing at the live file and a container restart picks it up.
+setup_platform_cert() {
     if [[ -z "$PLATFORM_CERT" || -z "$PLATFORM_KEY" ]]; then
-        return 1
+        log "FATAL: OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH are not set."
+        log "       Deploy this app on an OpenHost instance with TLS enabled."
+        exit 1
     fi
     if [[ ! -r "$PLATFORM_CERT" ]]; then
-        log "warning: OPENHOST_TLS_CERT_PATH=$PLATFORM_CERT is not readable; falling back to self-signed"
-        return 1
+        log "FATAL: platform cert not readable at $PLATFORM_CERT"
+        exit 1
     fi
     if [[ ! -r "$PLATFORM_KEY" ]]; then
-        log "warning: OPENHOST_TLS_KEY_PATH=$PLATFORM_KEY is not readable; falling back to self-signed"
-        return 1
+        log "FATAL: platform key not readable at $PLATFORM_KEY"
+        exit 1
     fi
-    # Replace any existing symlink or plain file with a fresh symlink.
-    # Use a temp name for the symlink and then atomically rename it so
-    # a SIGKILL mid-operation doesn't leave a dangling symlink.
+    # Atomic symlink replacement: write to a temp name then rename so a
+    # SIGKILL mid-operation never leaves a dangling symlink.
     local tmp_cert="${CERT_FILE}.symlnk"
     local tmp_key="${KEY_FILE}.symlnk"
     if ! ln -sf "$PLATFORM_CERT" "$tmp_cert"; then
-        log "warning: could not create symlink for platform cert; falling back to self-signed"
-        rm -f "$tmp_cert" 2>/dev/null || true
-        return 1
+        log "FATAL: could not create symlink for platform cert ($tmp_cert)"
+        exit 1
     fi
     if ! ln -sf "$PLATFORM_KEY" "$tmp_key"; then
-        log "warning: could not create symlink for platform key; falling back to self-signed"
-        rm -f "$tmp_cert" "$tmp_key" 2>/dev/null || true
-        return 1
+        log "FATAL: could not create symlink for platform key ($tmp_key)"
+        rm -f "$tmp_cert" 2>/dev/null || true
+        exit 1
     fi
     mv "$tmp_cert" "$CERT_FILE"
     mv "$tmp_key" "$KEY_FILE"
-    log "using platform TLS cert: $PLATFORM_CERT -> $CERT_FILE"
-    return 0
+    log "platform TLS cert symlinked: $PLATFORM_CERT -> $CERT_FILE"
 }
 
-if use_platform_cert; then
-    : # platform cert already symlinked into place above
-elif [[ ! -s "$CERT_FILE" || ! -s "$KEY_FILE" ]]; then
-    log "generating self-signed TLS cert for $DOMAIN (+ conference., share.)"
-    if ! generate_self_signed_cert; then
-        log "FATAL: self-signed cert bootstrap failed"
-        exit 1
-    fi
-else
-    log "reusing existing cert/key at $CERT_FILE"
-fi
+setup_platform_cert
 
 # Prosody needs to own the data dir so it can write accounts, archive,
 # and file-share uploads.  The Debian package creates user+group both

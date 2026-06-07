@@ -6,7 +6,7 @@ Prosody XMPP server packaged as an OpenHost app.
 - **Multi-user chat** on `conference.<xmpp-domain>` (XEP-0045 + MUC-MAM).
 - **HTTP file sharing** on `share.<xmpp-domain>` (XEP-0363) with a 100 MiB per-file cap, 500 MiB per-user-per-day rolling quota, and a 30-day expiry on each uploaded file.
 - **Mobile push notifications** (XEP-0357) so Conversations / Monal get notified even when the app isn't running.
-- **Self-signed TLS** on first boot — works with modern clients that use XEP-0368 direct-TLS on port 5223. Federation to other servers will fail until you drop in a real certificate (see below).
+- **CA-trusted TLS** via the platform's wildcard certificate — works for both client connections and s2s federation out of the box. Requires the OpenHost instance to have TLS enabled (the default for production instances).
 - **Registration closed by default**. You provision accounts by hand.
 
 Throughout this README, `<xmpp-domain>` means the full host where the server runs — by default `<app-name>.<zone-domain>`, e.g. `xmpp.andrew.host.imbue.com`. It is **not** the bare zone domain.
@@ -67,24 +67,7 @@ Any modern XMPP client works. Recommended:
 - [Gajim](https://gajim.org/) (Windows/Linux/macOS)
 - [Monal](https://monal-im.org/) (iOS/macOS)
 
-Enter a JID (`alice@xmpp.<zone>`), the password you set, and tell the client to connect. Self-signed cert → accept it once; your client caches the pinning and future connects are silent.
-
-## Real TLS certificates
-
-Self-signed is fine for personal-scale use among users who accept the cert once; **federation to other XMPP servers will fail** (their own TLS stack rejects self-signed). To federate, drop a real cert into the data dir — the filenames MUST include the full `<xmpp-domain>`, not just the bare zone:
-
-```
-$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.crt   # fullchain PEM
-$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.key   # private key PEM
-```
-
-E.g. if the server is running at `xmpp.andrew.host.imbue.com`, the files must be `xmpp.andrew.host.imbue.com.crt` / `.key`. Prosody silently falls back to the self-signed cert if the filenames don't match, so a misnamed upload produces no error message — just continued federation failures.
-
-Then restart the container via the OpenHost dashboard (click the app → Restart) or `oh app restart xmpp`. Prosody picks up the new cert from disk on every boot.
-
-(`prosodyctl reload` is the usual Prosody command for this, but this app runs Prosody in the foreground with `daemonize = false` and no pidfile, so there's no pidfile for `prosodyctl` to find. A container restart is the simplest reliable path.)
-
-The easiest way to get a real cert today: DNS-01 with `acme.sh` / `certbot` / `lego` on a machine you control, then upload via the file-browser app.
+Enter a JID (`alice@xmpp.<zone>`), the password you set, and tell the client to connect. The platform's CA-trusted wildcard cert covers `*.<zone>` so there are no cert warnings.
 
 ## SRV records (needed for full discovery)
 
@@ -106,10 +89,10 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 ## Files
 
 - `Dockerfile` — Debian 12 + Prosody 13 from upstream prosody.im + openssl + python3 for the status sidecar + tini for clean signal handling.
-- `start.sh` — renders the config template, bootstraps self-signed certs and the admin account, supervises prosody + sidecar.
+- `start.sh` — renders the config template, symlinks the platform TLS cert, bootstraps the admin account, supervises prosody + sidecar.
 - `prosody.cfg.lua.template` — the Prosody config. Rendered on every boot with the zone hostname injected.
 - `status_server.py` — tiny HTTP sidecar serving `/healthz` and a landing page on port 8080.
-- `openhost.toml` — OpenHost manifest declaring the XMPP ports and requesting `app_data` storage.
+- `openhost.toml` — OpenHost manifest declaring the XMPP ports, requesting `app_data` storage, and requiring `[tls] cert = true` for the platform wildcard certificate.
 
 ## Data layout
 
@@ -117,7 +100,7 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 
 - `prosody.cfg.lua` — rendered config (rewritten on each boot from the template).
 - `prosody.sqlite` — accounts, rosters, MAM archive, PEP pubsub, blocklists.
-- `certs/<xmpp-domain>.crt`, `certs/<xmpp-domain>.key` — TLS material (self-signed or operator-supplied).
+- `certs/<xmpp-domain>.crt`, `certs/<xmpp-domain>.key` — symlinks to the platform wildcard TLS cert (refreshed on every boot).
 - `admin_password.txt` — one-time admin password from first boot.
 - `http_file_share/` — uploaded files from XEP-0363 transfers. Files are auto-expired 30 days after upload.
 - `plugins/` — drop-in directory for custom Prosody modules. `plugin_paths` in the rendered config includes this directory, so you can extend the server without rebuilding the image. Empty by default.
@@ -126,6 +109,7 @@ All of these are included in OpenHost backups.
 
 ## Known limitations
 
+- **Requires TLS enabled on the platform.** The deploy fails with a clear error if `tls_enabled = false` in the router config or the platform cert has not yet been acquired.
 - **No federated discovery without SRV records.** You add them manually at your parent zone.
 - **No DANE / full TLSA.** Prosody supports it but we don't set it up — again a DNS plumbing gap that would go away once OpenHost's router lets apps register custom DNS records.
 - **No external TURN / STUN for audio/video.** Jitsi Meet is the right OpenHost app for conferencing; this one is a text-first XMPP server.

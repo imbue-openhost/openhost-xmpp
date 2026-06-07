@@ -19,14 +19,14 @@
 -- * The admin user is ``admin@<xmpp-domain>``, minted on first boot by start.sh
 --   with a random password in $OPENHOST_APP_DATA_DIR/admin_password.txt.
 -- * TLS is handled by a single cert/key pair at ``$DATA/certs/<xmpp-domain>.{crt,key}``.
---   A self-signed pair is generated on first boot; the operator can drop
---   real Let's Encrypt certs there and restart the container to swap
---   them in.  (We don't suggest ``prosodyctl reload`` because Prosody
---   runs here in the foreground without a pidfile, so prosodyctl
---   cannot find the running process to signal.)
--- * Federation (s2s) is enabled out of the box but will fail to other
---   servers until real certs are in place — self-signed is rejected by
---   most federating peers.
+--   On every boot start.sh symlinks the platform's wildcard certificate
+--   (injected via OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH) to these
+--   paths.  The platform cert covers ``*.<zone_domain>`` so it is valid for
+--   the XMPP domain without any per-app ACME work.  If the platform cert is
+--   not available the container exits immediately — there is no self-signed
+--   fallback, since self-signed certs break s2s federation.
+-- * Federation (s2s) is enabled and works out of the box with the
+--   CA-trusted platform certificate.
 -- * HTTP file sharing (XEP-0363) lives on a sub-component (share.<xmpp-domain>)
 --   and is backed by prosody's built-in ``http_file_share`` module with a
 --   100 MiB per-file cap, a 500 MiB per-user-per-day rolling quota, and

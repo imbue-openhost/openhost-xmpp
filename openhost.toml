@@ -89,13 +89,11 @@ public_paths = ["/"]
 app_data = true
 
 [tls]
-# Request the platform's wildcard TLS certificate to be bind-mounted into
+# Require the platform's wildcard TLS certificate to be bind-mounted into
 # the container at /run/secrets/tls/tls.crt (cert) and
 # /run/secrets/tls/tls.key (private key).  The platform env vars
-# OPENHOST_TLS_CERT_PATH and OPENHOST_TLS_KEY_PATH are also injected
-# pointing at those paths.
-#
-# When available, start.sh uses these in preference to the self-signed cert,
-# enabling verified TLS for both client connections and s2s federation without
-# any operator action beyond the standard OpenHost TLS setup.
+# OPENHOST_TLS_CERT_PATH and OPENHOST_TLS_KEY_PATH are injected pointing
+# at those paths.  start.sh symlinks these into the Prosody certs directory
+# so federation uses the CA-trusted wildcard cert, not a self-signed cert.
+# The deploy fails if TLS is not enabled on the platform.
 cert = true
