@@ -129,12 +129,9 @@ _HTML_TEMPLATE = """<!doctype html>
       <li>Port <code>5223</code> (direct TLS, XEP-0368) for clients on
           networks that strip or downgrade plaintext greetings.</li>
     </ul>
-    <p>Self-signed certificate on first boot — accept it once in your
-       client, or drop a real cert/key pair named
-       <code>&lt;xmpp-domain&gt;.crt</code> +
-       <code>&lt;xmpp-domain&gt;.key</code> into
-       <code>$OPENHOST_APP_DATA_DIR/certs/</code> and restart the
-       app from the OpenHost dashboard to pick the new cert up.</p>
+    <p>CA-trusted certificate provided by the OpenHost platform —
+       no cert warnings in clients, and federation with other servers
+       works out of the box.</p>
     <p>Recommended clients:
        <a href="https://conversations.im/">Conversations</a> (Android),
        <a href="https://dino.im/">Dino</a> (Linux),
@@ -155,10 +152,10 @@ _HTML_TEMPLATE = """<!doctype html>
   <div class="card">
     <h2>Federation</h2>
     <p>Server-to-server federation is enabled on port <code>5269</code>
-       (STARTTLS) and <code>5270</code> (direct TLS).  Other servers
-       reject self-signed certificates, so federation with strangers
-       will fail until real certificates are in place.  Same-zone
-       (user-to-user on your own server) works regardless.</p>
+       (STARTTLS) and <code>5270</code> (direct TLS).  The CA-trusted
+       platform certificate is used for both client and server
+       connections, so federation works immediately without any
+       additional certificate setup.</p>
   </div>
 </body>
 </html>

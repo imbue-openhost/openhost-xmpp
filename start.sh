@@ -248,7 +248,7 @@ create_admin_account() {
     # The write itself is atomic: write to ``.partial`` then ``mv``
     # into the final path, so a SIGKILL mid-``printf`` can't leave
     # an empty password file behind.  This matches the same pattern
-    # used by render_config and generate_self_signed_cert.
+    # used by render_config and setup_platform_cert.
     if ! printf '%s\n' "$password" > "$ADMIN_PASSWORD_FILE.partial"; then
         log "ERROR: failed to write $ADMIN_PASSWORD_FILE.partial"
         rm -f "$ADMIN_PASSWORD_FILE.partial" 2>/dev/null || true

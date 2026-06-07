@@ -19,7 +19,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 #     we enable (cyrussasl pulls in SCRAM / DIGEST-MD5 support, lua-sec
 #     provides TLS bindings; Prosody 13 uses LuaSec for its TLS stack,
 #     not the alternative luaossl binding)
-#   * openssl for the self-signed cert bootstrap in start.sh
+#   * openssl for the admin password generator (openssl rand) in start.sh
 #   * python3 for the tiny HTTP status sidecar
 #   * tini so SIGTERM from Docker cleanly propagates to our supervisor
 #     shell and both children

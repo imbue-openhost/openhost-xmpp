@@ -101,10 +101,10 @@ limits = {
     s2sin = { rate = "300kb/s"; };
 }
 
--- ssl / legacy_ssl block.  By default we point at a single cert/key pair
--- that start.sh either generates (self-signed) or loads from an operator-
--- provided real cert in the same path.  The ``certificates`` dir
--- convention (prosody <0.12) is bypassed — we name the pair directly.
+-- ssl / legacy_ssl block.  Points at the platform wildcard cert/key pair
+-- symlinked by start.sh from OPENHOST_TLS_CERT_PATH / OPENHOST_TLS_KEY_PATH.
+-- The ``certificates`` dir convention (prosody <0.12) is bypassed —
+-- we name the pair directly.
 ssl = {
     certificate = "@@DATA_DIR@@/certs/@@DOMAIN@@.crt";
     key         = "@@DATA_DIR@@/certs/@@DOMAIN@@.key";
