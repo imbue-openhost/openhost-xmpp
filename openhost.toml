@@ -66,6 +66,20 @@ label = "https"
 container_port = 5281
 host_port = 5281
 
+# Real, federation-trusted TLS certificate.  Prosody serves three vhosts —
+# the XMPP domain plus the conference. and share. components — so the cert
+# needs SANs for all three.  The zone wildcard (*.{zone}) covers
+# {app}.{zone} but NOT conference.{app}.{zone}/share.{app}.{zone} (those are
+# second-level labels), so OpenHost issues a dedicated cert via DNS-01 and
+# bind-mounts it read-only at /data/tls.  start.sh copies it over the
+# self-signed bootstrap pair on each boot.  Without this, s2s federation is
+# rejected by peers that don't trust self-signed certs.
+[[tls_certs]]
+label = "xmpp"
+domains = ["{app}.{zone}", "conference.{app}.{zone}", "share.{app}.{zone}"]
+cert_path = "{app}.{zone}.crt"
+key_path = "{app}.{zone}.key"
+
 [resources]
 # Prosody is Lua: ~50-80 MB RSS idle.  HTTP file uploads and MAM
 # archival each add a modest working set.  256 MB is comfortable for
