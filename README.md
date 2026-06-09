@@ -6,7 +6,7 @@ Prosody XMPP server packaged as an OpenHost app.
 - **Multi-user chat** on `conference.<xmpp-domain>` (XEP-0045 + MUC-MAM).
 - **HTTP file sharing** on `share.<xmpp-domain>` (XEP-0363) with a 100 MiB per-file cap, 500 MiB per-user-per-day rolling quota, and a 30-day expiry on each uploaded file.
 - **Mobile push notifications** (XEP-0357) so Conversations / Monal get notified even when the app isn't running.
-- **Self-signed TLS** on first boot — works with modern clients that use XEP-0368 direct-TLS on port 5223. Federation to other servers will fail until you drop in a real certificate (see below).
+- **Real, federation-trusted TLS** provisioned automatically by OpenHost. The app declares `[[tls_certs]]` in its manifest; OpenHost issues an ACME certificate (via DNS-01) covering the XMPP domain plus the `conference.` and `share.` components, bind-mounts it read-only, and the container swaps it in over a self-signed bootstrap pair. Certificates renew automatically. Server-to-server federation works out of the box. (On an OpenHost build without cert injection, or with TLS disabled, the server falls back to the self-signed pair and federation to strict peers will fail.)
 - **Registration closed by default**. You provision accounts by hand.
 
 Throughout this README, `<xmpp-domain>` means the full host where the server runs — by default `<app-name>.<zone-domain>`, e.g. `xmpp.andrew.host.imbue.com`. It is **not** the bare zone domain.
@@ -71,20 +71,19 @@ Enter a JID (`alice@xmpp.<zone>`), the password you set, and tell the client to 
 
 ## Real TLS certificates
 
-Self-signed is fine for personal-scale use among users who accept the cert once; **federation to other XMPP servers will fail** (their own TLS stack rejects self-signed). To federate, drop a real cert into the data dir — the filenames MUST include the full `<xmpp-domain>`, not just the bare zone:
+This is **automatic**. The manifest declares a `[[tls_certs]]` request covering the XMPP domain and its `conference.` / `share.` components:
 
+```toml
+[[tls_certs]]
+label = "xmpp"
+domains = ["{app}.{zone}", "conference.{app}.{zone}", "share.{app}.{zone}"]
+cert_path = "{app}.{zone}.crt"
+key_path = "{app}.{zone}.key"
 ```
-$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.crt   # fullchain PEM
-$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.key   # private key PEM
-```
 
-E.g. if the server is running at `xmpp.andrew.host.imbue.com`, the files must be `xmpp.andrew.host.imbue.com.crt` / `.key`. Prosody silently falls back to the self-signed cert if the filenames don't match, so a misnamed upload produces no error message — just continued federation failures.
+OpenHost issues a real ACME certificate for those names (via DNS-01, using the zone's CoreDNS) and bind-mounts it read-only into the container, exposing the paths via `$OPENHOST_TLS_CERT` / `$OPENHOST_TLS_KEY`. On every boot `start.sh` copies it over the self-signed bootstrap pair at `$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.{crt,key}`, which is where Prosody reads from. Renewals (OpenHost re-issues within 30 days of expiry and restarts the container) are picked up the same way — no operator action needed.
 
-Then restart the container via the OpenHost dashboard (click the app → Restart) or `oh app restart xmpp`. Prosody picks up the new cert from disk on every boot.
-
-(`prosodyctl reload` is the usual Prosody command for this, but this app runs Prosody in the foreground with `daemonize = false` and no pidfile, so there's no pidfile for `prosodyctl` to find. A container restart is the simplest reliable path.)
-
-The easiest way to get a real cert today: DNS-01 with `acme.sh` / `certbot` / `lego` on a machine you control, then upload via the file-browser app.
+If you're running on an OpenHost build that predates cert injection, or with TLS disabled, the server keeps the self-signed pair and **federation to strict peers will fail**. In that case you can still drop a real cert in manually at `$OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.{crt,key}` (filenames must include the full `<xmpp-domain>`) and restart the container.
 
 ## SRV records (needed for full discovery)
 

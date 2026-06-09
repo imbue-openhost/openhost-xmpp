@@ -252,6 +252,46 @@ else
     log "reusing existing cert/key at $CERT_FILE"
 fi
 
+# --- real (OpenHost-provisioned) TLS cert --------------------------------
+#
+# When the app declares ``[[tls_certs]]`` in openhost.toml, OpenHost issues a
+# real, federation-trusted certificate (via ACME DNS-01) and bind-mounts it
+# read-only at the paths in $OPENHOST_TLS_CERT / $OPENHOST_TLS_KEY.  We copy
+# it OVER the self-signed pair generated above on EVERY boot, so:
+#   * the first boot after OpenHost finishes provisioning swaps in the real
+#     cert (the container is restarted once the cert lands), and
+#   * automatic renewals (OpenHost re-issues within 30 days of expiry and
+#     restarts the container) are picked up without operator action.
+# Prosody reads the cert at the fixed $CERT_FILE/$KEY_FILE paths from its
+# config, so we copy rather than re-point the config.  If the env vars are
+# unset (app deployed on an OpenHost build without cert injection, or TLS
+# disabled) we silently keep the self-signed pair.
+install_real_cert() {
+    if [[ -z "${OPENHOST_TLS_CERT:-}" || -z "${OPENHOST_TLS_KEY:-}" ]]; then
+        log "no OpenHost-provisioned cert injected; using self-signed pair"
+        return 0
+    fi
+    if [[ ! -s "$OPENHOST_TLS_CERT" || ! -s "$OPENHOST_TLS_KEY" ]]; then
+        log "warning: OPENHOST_TLS_CERT/KEY set but files missing/empty ($OPENHOST_TLS_CERT); keeping self-signed"
+        return 0
+    fi
+    # Copy to .partial then mv so a crash mid-copy can't leave prosody with a
+    # cert that doesn't match its key.  The source is a read-only bind mount;
+    # cp -L follows symlinks (none expected, but harmless).
+    if ! cp -L "$OPENHOST_TLS_CERT" "$CERT_FILE.partial" \
+        || ! cp -L "$OPENHOST_TLS_KEY" "$KEY_FILE.partial"; then
+        log "warning: failed to copy injected cert; keeping self-signed"
+        rm -f "$CERT_FILE.partial" "$KEY_FILE.partial" 2>/dev/null || true
+        return 0
+    fi
+    mv "$CERT_FILE.partial" "$CERT_FILE"
+    mv "$KEY_FILE.partial" "$KEY_FILE"
+    chmod 640 "$CERT_FILE" "$KEY_FILE"
+    chown root:prosody "$CERT_FILE" "$KEY_FILE" 2>/dev/null || true
+    log "installed OpenHost-provisioned TLS cert from $OPENHOST_TLS_CERT"
+}
+install_real_cert
+
 # Prosody needs to own the data dir so it can write accounts, archive,
 # and file-share uploads.  The Debian package creates user+group both
 # named ``prosody``.
