@@ -1,4 +1,4 @@
-Prosody XMPP server packaged as an OpenHost app.
+Prosody XMPP server packaged as a Cloud in a Bottle app.
 
 ## What you get
 
@@ -21,9 +21,9 @@ Throughout this README, `<xmpp-domain>` means the full host where the server run
 | 5270/tcp   | TCP      | s2s direct TLS — XEP-0368 for federation                                      |
 | 5280/tcp   | HTTP     | BOSH, XMPP-over-WebSocket, file-share downloads (plain HTTP)                  |
 | 5281/tcp   | HTTPS    | Same as 5280 over TLS — what modern clients use for HTTP file transfer       |
-| 8080/tcp   | HTTP     | Health-check + landing page exposed via the OpenHost router                   |
+| 8080/tcp   | HTTP     | Health-check + landing page exposed via the Cloud in a Bottle router                   |
 
-The XMPP + HTTP ports are declared in `[[ports]]` and published directly on the host's `0.0.0.0` by OpenHost — they bypass Caddy and the OpenHost router. On Hetzner the default firewall is open; on EC2 you'll need to amend the security group in `openhost-vm-manager` to allow inbound `5222, 5223, 5269, 5270, 5280, 5281`.
+The XMPP + HTTP ports are declared in `[[ports]]` and published directly on the host's `0.0.0.0` by Cloud in a Bottle — they bypass Caddy and the Cloud in a Bottle router. On Hetzner the default firewall is open; on EC2 you'll need to amend the security group in `openhost-vm-manager` to allow inbound `5222, 5223, 5269, 5270, 5280, 5281`.
 
 Ports 5280/5281 are required for **HTTP file transfer (XEP-0363)** to work — without them a client can upload a file but nobody else can download it. They're also used by web-based XMPP clients and by native clients that fall back to BOSH on networks that block non-443 TCP.
 
@@ -32,7 +32,7 @@ Ports 5280/5281 are required for **HTTP file transfer (XEP-0363)** to work — w
 ### 1. Deploy
 
 ```bash
-oh app deploy https://github.com/imbue-openhost/openhost-xmpp --wait
+oh app deploy https://github.com/imbue-openhost/bottled-xmpp --wait
 ```
 
 ### 2. Grab the admin password
@@ -80,7 +80,7 @@ $OPENHOST_APP_DATA_DIR/certs/<xmpp-domain>.key   # private key PEM
 
 E.g. if the server is running at `xmpp.andrew.host.imbue.com`, the files must be `xmpp.andrew.host.imbue.com.crt` / `.key`. Prosody silently falls back to the self-signed cert if the filenames don't match, so a misnamed upload produces no error message — just continued federation failures.
 
-Then restart the container via the OpenHost dashboard (click the app → Restart) or `oh app restart xmpp`. Prosody picks up the new cert from disk on every boot.
+Then restart the container via the Cloud in a Bottle dashboard (click the app → Restart) or `oh app restart xmpp`. Prosody picks up the new cert from disk on every boot.
 
 (`prosodyctl reload` is the usual Prosody command for this, but this app runs Prosody in the foreground with `daemonize = false` and no pidfile, so there's no pidfile for `prosodyctl` to find. A container restart is the simplest reliable path.)
 
@@ -88,7 +88,7 @@ The easiest way to get a real cert today: DNS-01 with `acme.sh` / `certbot` / `l
 
 ## SRV records (needed for full discovery)
 
-XMPP clients and federating servers discover your server via SRV records. OpenHost's CoreDNS only serves A / AAAA / ACME-challenge TXT today, so you need to add these at your parent DNS zone (wherever you manage `<zone>`):
+XMPP clients and federating servers discover your server via SRV records. Cloud in a Bottle's CoreDNS only serves A / AAAA / ACME-challenge TXT today, so you need to add these at your parent DNS zone (wherever you manage `<zone>`):
 
 ```
 _xmpp-client._tcp.xmpp.<zone>.    IN SRV 10 0 5222 xmpp.<zone>.
@@ -109,7 +109,7 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 - `start.sh` — renders the config template, bootstraps self-signed certs and the admin account, supervises prosody + sidecar.
 - `prosody.cfg.lua.template` — the Prosody config. Rendered on every boot with the zone hostname injected.
 - `status_server.py` — tiny HTTP sidecar serving `/healthz` and a landing page on port 8080.
-- `openhost.toml` — OpenHost manifest declaring the XMPP ports and requesting `app_data` storage.
+- `openhost.toml` — Cloud in a Bottle manifest declaring the XMPP ports and requesting `app_data` storage.
 
 ## Data layout
 
@@ -122,11 +122,11 @@ The default `openhost.toml` asks for 256 MB RAM / 0.25 CPU. That's comfortable f
 - `http_file_share/` — uploaded files from XEP-0363 transfers. Files are auto-expired 30 days after upload.
 - `plugins/` — drop-in directory for custom Prosody modules. `plugin_paths` in the rendered config includes this directory, so you can extend the server without rebuilding the image. Empty by default.
 
-All of these are included in OpenHost backups.
+All of these are included in Cloud in a Bottle backups.
 
 ## Known limitations
 
 - **No federated discovery without SRV records.** You add them manually at your parent zone.
-- **No DANE / full TLSA.** Prosody supports it but we don't set it up — again a DNS plumbing gap that would go away once OpenHost's router lets apps register custom DNS records.
-- **No external TURN / STUN for audio/video.** Jitsi Meet is the right OpenHost app for conferencing; this one is a text-first XMPP server.
+- **No DANE / full TLSA.** Prosody supports it but we don't set it up — again a DNS plumbing gap that would go away once Cloud in a Bottle's router lets apps register custom DNS records.
+- **No external TURN / STUN for audio/video.** Jitsi Meet is the right Cloud in a Bottle app for conferencing; this one is a text-first XMPP server.
 - **`cloud_notify` push works** but relies on a public push relay the user's client negotiates with their device OS. No sketchy server-side secrets needed.
